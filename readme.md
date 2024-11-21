@@ -16,8 +16,14 @@ The `project` directory contains code and supporting files for stochastic interp
 
 Note that the code makes use of PyTorch, PyTorch Lightning, and Wandb but can be adapted to a different framework. The important part for stochastic interpolation of categorical data is the embedding, decoding, training steps, and inference using an ODE solver.
 
-The `tensorprocessor.py` file is to process inference data into PyVista since many HPC platforms do not have xvfb installed which is required for PyVista plotting. Some generated samples are found in the samples directory. The best trained model so far for 64^3 data is given in `demo_model` and is set to load in the `model_train_inference.py` script.
+The `tensorprocessor.py` file is to process inference data into PyVista since many HPC platforms do not have xvfb installed which is required for PyVista plotting. Some generated samples are found in the samples directory. 
 
 The overall structure is designed to allow for learned categorical embeddings, and preparation work for adding EMA and other techniques for better training stability. EMA is not currently tested.
 
 A helper for inspecting categorical distribution of data is also in the project directory.
+
+The demo trained model can be downloaded and placed in this folder 
+
+
+The best trained model so far for 64^3 data is to be given in `demo_model` and is set to load in the `model_train_inference.py` script. Since the file is too large for GitHub, manually download it and place it in the folder:
+https://drive.google.com/file/d/1BJxvTbbqeNoPFai5Df2Xw5MpzFyttM2m/view?usp=sharing

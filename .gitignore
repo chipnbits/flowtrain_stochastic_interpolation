@@ -6,3 +6,4 @@ models/saved_models
 *.egg-info/
 *images/
 *.pt
+*.ckpt
