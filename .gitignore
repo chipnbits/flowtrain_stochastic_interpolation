@@ -1,0 +1,8 @@
+data/
+saved_models/
+__pycache__/
+wandb/
+models/saved_models
+*.egg-info/
+*images/
+*.pt
