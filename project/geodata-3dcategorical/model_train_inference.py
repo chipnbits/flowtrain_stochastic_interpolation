@@ -770,7 +770,7 @@ def main() -> None:
         script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
         checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
 
-        model = Geo3DStochInterp.load_from_checkpoint(checkpoint_path).to(
+        model = Geo3DStochInterp.load_from_checkpoint(checkpoint_path, map_location=inference_device).to(
             inference_device
         )
 
