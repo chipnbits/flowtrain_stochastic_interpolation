@@ -644,8 +644,8 @@ def run_inference(
 
     solver = ODEFlowSolver(model=model.net, rtol=1e-6)
 
-    t0, tf = 0.001, 0.999
-    n_steps = 32
+    t0, tf = 0.001, 1.0
+    n_steps = 16
 
     # Enable off-screen rendering if using PyVista or similar
     # pv.OFF_SCREEN = True  # Uncomment if using PyVista
@@ -692,11 +692,15 @@ def run_inference(
 
             for i in range(current_batch_size):
                 sample_idx = batch_idx * batch_size + i
-                sample_tensor = final_solution[i].detach().cpu()  # [C, X, Y, Z]
-                tensor_path = os.path.join(samples_dir, f"sample_{sample_idx}.pt")
+                sample_tensor = decoded[i].detach().cpu()  # [C, X, Y, Z]
+                tensor_path = os.path.join(samples_dir, f"decoded_s{inference_seed}_{sample_idx}.pt")
                 torch.save(sample_tensor, tensor_path)
-                print(f"Saved tensor to {tensor_path}")
-
+                
+                # Save the nondecoded tensors with time steps as well
+                sample_tensor = solution[:, i].detach().cpu()  # [T, C, X, Y, Z]
+                tensor_path = os.path.join(samples_dir, f"fullsol_s{inference_seed}_{sample_idx}.pt")
+                torch.save(sample_tensor, tensor_path)
+                
                 if save_imgs:
                     # Save static view
                     try:
@@ -778,9 +782,10 @@ def main() -> None:
             dirs,
             inference_device,
             model=model,
-            n_samples=4,
+            n_samples=500,
             batch_size=4,
             data_shape=(64, 64, 64),
+            inference_seed=100,
             save_imgs=False,
         )
 
