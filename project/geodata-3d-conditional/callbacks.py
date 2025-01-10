@@ -151,7 +151,7 @@ class InferenceCallback(Callback):
                             break
                         except OSError as e:
                             print(f"Retrying prominence image {image_path} due to error: {e}")
-                            time.sleep(0.5)
+                            clock.sleep(0.5)
                 except Exception as e:
                     print(f"Error logging prominence image {image_path}: {e}")
 

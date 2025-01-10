@@ -26,10 +26,11 @@ from lightning.pytorch.core import LightningModule
 from lightning.pytorch.loggers import WandbLogger
 
 # Project-specific imports
+from boreholes import make_boreholes_mask
 from callbacks import EMACallback, InferenceCallback
 from geogen.dataset import GeoData3DStreamingDataset
 from flowtrain.interpolation import LinearInterpolant, StochasticInterpolator
-from flowtrain.models import Unet3D
+from flowtrain.models import Unet3DCond as Unet3D
 from flowtrain.solvers import ODEFlowSolver
 
 from utils import (
@@ -95,12 +96,11 @@ def get_config() -> dict:
         },
         # Training parameters
         "training": {
-            "lambda_angle": 10,
             "max_epochs": 2000,
-            "learning_rate": 2.0e-4,
+            "learning_rate": 2.0e-3,
             "lr_decay": 0.997,
             "gradient_clip_val": 1.0,
-            "accumulate_grad_batches": 24,
+            "accumulate_grad_batches": 16,
             "log_every_n_steps": 5,
         },
         # Inference parameters
@@ -247,9 +247,7 @@ class Geo3DStochInterp(LightningModule):
         time_range: List[float] = [0.0005, 0.9995],
         num_categories: int = 15,
         embedding_dim: int = 20,
-        lambda_angle: float = 0.1,
-        learning_rate: float = 2.0e-4,  # Left here due to saved model compatibility
-        lr_decay: float = 0.997,
+        lambda_reconstruct: float = 1.0,
         **model_params: Any,
     ):
         super().__init__()
@@ -259,7 +257,7 @@ class Geo3DStochInterp(LightningModule):
         self.time_range = time_range
         self.num_categories = num_categories
         self.embedding_dim = embedding_dim
-        self.lambda_angle = lambda_angle
+        self.lambda_reconstruct = lambda_reconstruct
 
         # Embedding layer setup
         self.embedding = nn.Embedding(self.num_categories, self.embedding_dim)
@@ -373,15 +371,13 @@ class Geo3DStochInterp(LightningModule):
         Returns:
             torch.Tensor: Loss value.
         """
-        # Renormalize embeddings to unit ball, important for learnable embeddings and decoding metric used
-        with torch.no_grad():
-            self.embedding.weight.div_(
-                self.embedding.weight.norm(p=2, dim=1, keepdim=True)
-            )
-
+        
         # Draw encoded geogen model. Small noise is added to prevent singularities.
         X1 = self.embed(batch)  # [B, E, X, Y, Z]
-        X1 = X1 + 1e-3 * torch.randn_like(X1)
+        mask_boreholes = make_boreholes_mask(batch).expand(-1, X1.shape[1], -1, -1, -1) # [B, E, X, Y, Z]     
+        b = X1[mask_boreholes]  # [N_masked, E] 
+        ATb = X1 * mask_boreholes
+        X1 = X1 + 1e-3 * torch.randn_like(X1)     
 
         X0 = torch.randn_like(X1)  # [B, E, X, Y, Z]
 
@@ -392,32 +388,21 @@ class Geo3DStochInterp(LightningModule):
 
         # Compute objectives
         XT, BT = self.interpolator.flow_objective(T, X0, X1)
-        BT_hat = self.net(XT, T)  # [B, E, X, Y, Z]
-
+        BT_hat = self.net(XT, ATb, T)  # [B, E, X, Y, Z]
+        b_hat = XT[mask_boreholes] + ((1-T).unsqueeze(1) * BT_hat)[mask_boreholes]  # [B, E, X, Y, Z]
+        
         # Compute losses
         mse_loss = F.mse_loss(BT, BT_hat) / F.mse_loss(BT, torch.zeros_like(BT))
-
-        # Orthogonality loss on embeddings (metric if using learnable embeddings)
-        embed_norm = F.normalize(self.embedding.weight, dim=1)
-        gram_matrix = torch.matmul(embed_norm, embed_norm.t())
-        angle_loss = torch.sum(gram_matrix)  # optimal spread gives 0
-
+        reconstruct_loss = F.mse_loss(b, b_hat) / F.mse_loss(X1, torch.zeros_like(X1))
+        
         # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
-        loss = mse_loss + self.lambda_angle * angle_loss
-
-        # Track the mean of the embedding vectors (useful for learnable embeddings)
-        mean_embedding = self.embedding.weight.mean(dim=0)  # Mean of embedding vectors
-        mean_embedding_norm = torch.norm(
-            mean_embedding
-        )  # Norm of the mean embedding vector
+        loss = mse_loss + self.lambda_reconstruct * reconstruct_loss
 
         # Log the training loss and orthogonality loss
         self.log_dict(
             {
                 "train_loss": loss,
                 "flow_loss": mse_loss,
-                "angle_loss": angle_loss,
-                "mean_embedding_norm": mean_embedding_norm,
             },
             on_step=True,
             on_epoch=True,
@@ -433,65 +418,6 @@ class Geo3DStochInterp(LightningModule):
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("lr", lr, on_epoch=True, logger=True)
         # self._log_embedding_gram_matrix()
-
-    def _log_embedding_gram_matrix(self):
-        """
-        Helper to log a heatmap of the Gram matrix of the embedding vectors.
-        This computes the angle pariwise between all embedding vectors, useful
-        for tracking the spread of learnable embeddings.
-        """
-        # Generate the Gram matrix (self dot products) for embedding vectors
-        embed_vecs = self.embedding.weight
-        gram_matrix = (
-            torch.matmul(embed_vecs, embed_vecs.t()).detach().cpu().numpy()
-        )  # Convert to numpy
-        # Remove the diagonal elements for visualization
-        np.fill_diagonal(gram_matrix, 0)
-
-        # Create a heatmap plot with matplotlib/seaborn
-        plt.figure(figsize=(8, 6))
-        ax = sns.heatmap(gram_matrix, annot=False, cmap="coolwarm", cbar=True)
-        plt.title(f"Embedding Gram Matrix at Epoch {self.current_epoch}")
-
-        # Define groupings for the boxes and corresponding labels
-        groupings = [[0], [1], [2, 3, 4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14]]
-        labels = ["Air", "Basement", "Sediment", "Dike", "Intrusion", "Blob"]
-
-        for group, label in zip(groupings, labels):
-            # Draw a rectangle around each group
-            start = group[0]
-            end = group[-1]
-            rect = patches.Rectangle(
-                (start, start),
-                end - start + 1,
-                end - start + 1,
-                fill=False,
-                edgecolor="teal",
-                linewidth=2,
-                linestyle="--",
-            )
-            ax.add_patch(rect)
-
-            # Add a label in the center of each box
-            center_x = (start + end + 1) / 2
-            center_y = (start + end + 1) / 2
-            ax.text(
-                center_x,
-                center_y,
-                label,
-                color="black",
-                ha="center",
-                va="center",
-                fontsize=10,
-                fontweight="bold",
-                alpha=0.7,
-            )
-
-        # Log the plot directly to Wandb via the logger
-        self.logger.experiment.log({"embedding_gram_matrix": wandb.Image(plt)})
-
-        # Close the plot to free memory
-        plt.close()
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """

@@ -21,7 +21,7 @@ from geogen.model import GeoModel
 DEFAULT_BOUNDS = ((-3840, 3840), (-3840, 3840), (-1920, 1920))
 
 def main():
-    proj_name = "cat-embeddings-time-samples"
+    proj_name = "cat-embeddings-final-time"
     saved_tensors_dir = os.path.join(os.path.dirname(__file__), "samples", proj_name)
     save_imgs_dir = os.path.join(os.path.dirname(__file__), "images", proj_name)
     save_emb_dir = os.path.join(os.path.dirname(__file__), "embeddings", proj_name)
@@ -34,8 +34,8 @@ def main():
     
     make_views(saved_tensors_dir, save_imgs_dir, view_type='vol', bounds=bounds, )
     make_views(saved_tensors_dir, save_imgs_dir, view_type='cat', bounds=bounds,  )
-    make_views(saved_tensors_dir, save_imgs_dir, animate=True, view_type='vol', bounds=bounds, delay_on_last_frame=3,)
-    make_views(saved_tensors_dir, save_imgs_dir, animate=True, view_type='cat', bounds=bounds, delay_on_last_frame=3,)
+    # make_views(saved_tensors_dir, save_imgs_dir, animate=True, view_type='vol', bounds=bounds, delay_on_last_frame=3,)
+    # make_views(saved_tensors_dir, save_imgs_dir, animate=True, view_type='cat', bounds=bounds, delay_on_last_frame=3,)
 
 def load_embedding(file_path: str):
     """Load the nn.Embedding layer from a saved state dict file."""
@@ -121,8 +121,9 @@ def plot_tensor(tensor: torch.Tensor, view_type: str, bounds=None, plotter=None)
 
 def save_final_frame(tensor: torch.Tensor, save_dir: str, filename: str, view_type: str, bounds=None):
     """ Save the last frame of a tensor as an image for the specified view_type."""
+    
     filename = filename.split(".")[0]
-    tensor = tensor[-1].round()
+    # tensor = tensor[-1].round()
 
     # Get the plotter with the tensor plotted
     p = plot_tensor(tensor, view_type, bounds)
