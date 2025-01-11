@@ -49,7 +49,7 @@ def get_config() -> dict:
         dict: Configuration dictionary.
     """
     config = {
-        "resume": True,
+        "resume": False,
         "devices": [0, 1, 2],  # This will be adjusted automatically below
         # Project configurations
         "project": {
@@ -101,14 +101,14 @@ def get_config() -> dict:
             "learning_rate": 2.0e-3,
             "lr_decay": 0.997,
             "gradient_clip_val": 1.0,
-            "accumulate_grad_batches": 4,
+            "accumulate_grad_batches": 2,
             "log_every_n_steps": 10,
             # --- EMA configuration ---
             "use_ema": True,
             "ema_decay": 0.9999,
             "ema_start_step": 0,
             "ema_update_every": 1,
-            "ema_update_on_cpu": True,
+            "ema_update_on_cpu": False,
         },
         # Inference parameters
         "inference": {

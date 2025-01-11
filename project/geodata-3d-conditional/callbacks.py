@@ -198,7 +198,7 @@ class EMACallback(Callback):
     
     """
 
-    def __init__(self, decay=0.9999, start_step=15000, update_every=1, update_on_cpu=True):
+    def __init__(self, decay=0.9999, start_step=15000, update_every=1, update_on_cpu=False):
         super().__init__()
         self.decay = decay
         self.start_step = start_step
@@ -241,39 +241,25 @@ class EMACallback(Callback):
                         shadow_gpu = alpha * shadow_gpu + (1.0 - alpha) * param.data
                         self.shadow[name] = shadow_gpu
 
-    def on_validation_start(self, trainer, pl_module):
-        """
-        Before validation, back up the current weights and load EMA weights for evaluation.
-        """
-        self._backup_and_apply_ema(pl_module)
-
-    def on_validation_end(self, trainer, pl_module):
-        """
-        After validation, restore the original trained weights.
-        """
-        self._restore_original_weights(pl_module)
-
     def on_train_end(self, trainer, pl_module):
         """
         apply EMA weights permanently at the end of training.
         """
-        self._backup_and_apply_ema(pl_module)
+        self.apply_ema_weights(pl_module)
 
-    def _backup_and_apply_ema(self, pl_module):
+    def apply_ema_weights(self, pl_module):
         """
         Save the current weights to self.backup, then replace model params with EMA weights.
         """
         self.backup.clear()
         for name, param in pl_module.named_parameters():
-            # Store the original weights (always on CPU)
             self.backup[name] = param.data.detach().cpu().clone()
 
-            # If there's a shadow version, copy it to the device
             if name in self.shadow:
-                # If stored on CPU, move to the param's device; if stored on GPU, just copy
+
                 param.data.copy_(self.shadow[name].to(param.device))
 
-    def _restore_original_weights(self, pl_module):
+    def restore_original_weights(self, pl_module):
         """
         Restore the original (non-EMA) weights that were saved in _backup_and_apply_ema.
         """
