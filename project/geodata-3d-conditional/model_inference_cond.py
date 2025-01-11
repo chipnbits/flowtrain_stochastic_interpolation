@@ -1,9 +1,14 @@
 import os
 import torch
 import time
+import math
+import pyvista as pv
+from pyvistaqt import BackgroundPlotter
 
 from boreholes import make_boreholes_mask
 from geogen.dataset import GeoData3DStreamingDataset
+from geogen.model import GeoModel
+import geogen.plot as geovis
 from model_train import (
     Geo3DStochInterp,
     get_config,
@@ -13,7 +18,9 @@ from model_train import (
 )
 
 
-def model_test(dirs, device, model: Geo3DStochInterp = None, n_samples=10):
+def model_test(
+    dirs, device, model: Geo3DStochInterp = None, n_samples=9, preview_boreholes=True
+):
     """
     Draw a random model, create boreholes, run inference to reconstruct the model, save results.
     """
@@ -25,11 +32,65 @@ def model_test(dirs, device, model: Geo3DStochInterp = None, n_samples=10):
     )
 
     synthetic_model = dataset[0].unsqueeze(0)  # [1, 1, X, Y, Z]
-    boreholes = make_boreholes_mask(synthetic_model)  # [1, 1, X, Y, Z]
-    
+    boreholes_mask = make_boreholes_mask(synthetic_model)  # [1, 1, X, Y, Z]
+    boreholes = synthetic_model.clone()
+    boreholes[~boreholes_mask] = -1  # delete rock around boreholes
+
+    preview_boreholes and show_model_and_boreholes(synthetic_model, boreholes)
+
+    X1 = model.embed(synthetic_model)  # [1, C, X, Y, Z]
+    ATb = X1.clone()
+    ATb[~boreholes_mask.expand(-1, X1.shape[1], -1, -1, -1)] = 0
+    print(f"Encoded model shape: {X1.shape}, ATb shape: {ATb.shape}")
+
+    inv_solutions = run_inference(
+        device,
+        model=model,
+        ATb=ATb,
+        data_shape=model.data_shape,
+        n_samples=n_samples,
+        inference_seed=42,
+    )  # [T, B, C, X, Y, Z]
+    sol_tf = inv_solutions[-1]  # [B, C, X, Y, Z]
+    sol_decoded = model.decode(sol_tf).detach().cpu() - 1  # [B, 1, X, Y, Z] (bump back down to -1)
+    show_solutions(sol_decoded)
+
+
+def show_solutions(solutions):
+    n_samples = solutions.shape[0]
+    n_cols = math.ceil(n_samples**0.5)
+    n_rows = math.ceil(n_samples / n_cols)
+    p2 = pv.Plotter(shape=(n_rows, n_cols))
+    for i in range(n_samples):
+        p2.subplot(i // n_cols, i % n_cols)
+        geovis.volview(GeoModel.from_tensor(solutions[i]), plotter=p2)
+
+    p2.show()
+
+
+def show_model_and_boreholes(model, boreholes):
+    """
+    Plot the model and boreholes side by side.
+    """
+    # Make two pane pyvista plot
+    p = BackgroundPlotter(shape=(1, 2))
+
+    # Plot the synthetic model
+    p.subplot(0, 0)
+    m = GeoModel.from_tensor(model.squeeze().detach().cpu())
+    geovis.volview(m, plotter=p)
+
+    # Select 2nd pane
+    p.subplot(0, 1)
+    bh = GeoModel.from_tensor(boreholes.squeeze().detach().cpu())
+    geovis.volview(bh, plotter=p)
+
+    p.show()
+
+
 def run_inference(
     device,
-    model=None,
+    model: Geo3DStochInterp = None,
     ATb=None,
     data_shape=None,
     n_samples=10,
@@ -62,7 +123,7 @@ def run_inference(
 
     # Wrapper function to align the call signature
     def dxdt_cond(x, time, *args, **kwargs):
-        return model.forward(x, ATb=ATb, time=time, *args, **kwargs)
+        return model.net.forward(x, ATb=ATb, time=time, *args, **kwargs)
 
     solver = ODEFlowSolver(model=dxdt_cond, rtol=1e-6)
 
@@ -87,14 +148,16 @@ def run_inference(
         ATb = torch.zeros_like(X0)
     else:
         ATb = ATb.to(device)
-        # Add batch dimension and expand without duplicating memory
-        ATb = ATb.unsqueeze(0).expand(n_samples, *ATb.shape)
+        # expand the batch dim to n_samples
+        ATb = ATb.expand(n_samples, -1, -1, -1, -1)
 
     # Run the inference
     t0, tf = 0.001, 0.999
     n_steps = 16
     start = time.time()
-    solution = solver.solve(X0, ATb=ATb, t0=0.001, tf=0.999)  # [T, B, C, X, Y, Z]
+    solution = solver.solve(
+        X0, t0=0.001, tf=0.999, n_steps=n_steps
+    )  # [T, B, C, X, Y, Z]
 
     print(f"Time taken for inference: {time.time() - start:.2f} seconds")
 
@@ -105,7 +168,7 @@ def main() -> None:
     cfg = get_config()
     dirs = setup_directories(cfg)
 
-    inference_device = "cuda:2"
+    inference_device = "cuda"
     relative_checkpoint_path = os.path.join(
         "saved_models",
         "18d-embeddings-conditional",
@@ -123,6 +186,7 @@ def main() -> None:
         dirs,
         inference_device,
         model=model,
+        n_samples=9,
     )
 
 
