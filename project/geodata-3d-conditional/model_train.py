@@ -7,6 +7,7 @@ import platform
 import time
 import warnings
 from typing import Any, Dict, List, Tuple, Optional
+from functools import partial
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -49,21 +50,21 @@ def get_config() -> dict:
     """
     config = {
         "resume": True,
-        "devices": [1, 2],  # This will be adjusted automatically below
+        "devices": [0, 1, 2],  # This will be adjusted automatically below
         # Project configurations
         "project": {
-            "name": "cat-embeddings-18d-normed-64cubed",
+            "name": "18d-embeddings-conditional",
             "root_dir": os.path.dirname(os.path.abspath(__file__)),
         },
         # Data loader configurations
         "data": {
-            "shape": (64, 64, 64),  # [C, X, Y, Z]
+            "shape": (16,16,16),  # [C, X, Y, Z]
             "bounds": (
                 (-1920, 1920),
                 (-1920, 1920),
                 (-1920, 1920),
             ),
-            "batch_size": 6,
+            "batch_size": 32,
             "epoch_size": 10_000,
         },
         # Categorical embedding parameters
@@ -100,8 +101,8 @@ def get_config() -> dict:
             "learning_rate": 2.0e-3,
             "lr_decay": 0.997,
             "gradient_clip_val": 1.0,
-            "accumulate_grad_batches": 16,
-            "log_every_n_steps": 5,
+            "accumulate_grad_batches": 4,
+            "log_every_n_steps": 10,
         },
         # Inference parameters
         "inference": {
@@ -187,7 +188,7 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
     return callbacks
 
 
-def get_data_loader(config: dict, device: str) -> DataLoader:
+def get_data_loader(config: dict, device: str = 'cpu') -> DataLoader:
     """
     Initialize the data loader for training.
 
@@ -199,7 +200,7 @@ def get_data_loader(config: dict, device: str) -> DataLoader:
         model_resolution=config["data"]["shape"],  # [C, X, Y, Z]
         model_bounds=config["data"]["bounds"],
         dataset_size=config["data"]["epoch_size"],
-        device="cpu",
+        device=device,
     )
     dataloader = DataLoader(
         dataset,
@@ -224,8 +225,6 @@ class Geo3DStochInterp(LightningModule):
         Number of categorical classes.
     embedding_dim : int
         Dimension of the embedding vectors for categories, GeoGen has 15 categories to embed
-    lambda_angle : float
-        Weight for the angle (cosine similarity) loss if using learnable normalized embeddings.
     model_params : dict
         Parameters for the flow match ML model that predicts the stochastic interpolation objective.
 
@@ -248,10 +247,14 @@ class Geo3DStochInterp(LightningModule):
         num_categories: int = 15,
         embedding_dim: int = 20,
         lambda_reconstruct: float = 1.0,
+        learning_rate: float = 2e-3,  
+        lr_decay: float = 0.997,  
         **model_params: Any,
     ):
         super().__init__()
         self.save_hyperparameters()
+        self.learning_rate = learning_rate
+        self.lr_decay = lr_decay
 
         self.data_shape = data_shape
         self.time_range = time_range
@@ -389,7 +392,9 @@ class Geo3DStochInterp(LightningModule):
         # Compute objectives
         XT, BT = self.interpolator.flow_objective(T, X0, X1)
         BT_hat = self.net(XT, ATb, T)  # [B, E, X, Y, Z]
-        b_hat = XT[mask_boreholes] + ((1-T).unsqueeze(1) * BT_hat)[mask_boreholes]  # [B, E, X, Y, Z]
+        
+        T_broadcasted = T.view(-1, 1, 1, 1, 1)  # Shape: [6, 1, 1, 1, 1]
+        b_hat = XT[mask_boreholes] + ((1-T_broadcasted) * BT_hat)[mask_boreholes]  # [B, E, X, Y, Z]
         
         # Compute losses
         mse_loss = F.mse_loss(BT, BT_hat) / F.mse_loss(BT, torch.zeros_like(BT))
@@ -403,6 +408,7 @@ class Geo3DStochInterp(LightningModule):
             {
                 "train_loss": loss,
                 "flow_loss": mse_loss,
+                "reconstruct_loss": reconstruct_loss,
             },
             on_step=True,
             on_epoch=True,
@@ -429,19 +435,19 @@ class Geo3DStochInterp(LightningModule):
         )
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
-    def on_save_checkpoint(self, checkpoint):
+    # def on_save_checkpoint(self, checkpoint):
 
-        checkpoint["ema_shadow"] = (
-            self.ema_shadow
-        )  # Save the EMA weights to the checkpoint
+    #     checkpoint["ema_shadow"] = (
+    #         self.ema_shadow
+    #     )  # Save the EMA weights to the checkpoint
 
-    def on_load_checkpoint(self, checkpoint):
-        self.ema_shadow = checkpoint[
-            "ema_shadow"
-        ]  # Load the EMA weights from the checkpoint
+    # def on_load_checkpoint(self, checkpoint):
+    #     self.ema_shadow = checkpoint[
+    #         "ema_shadow"
+    #     ]  # Load the EMA weights from the checkpoint
 
 
-def launch_training(config, dirs, device: str) -> None:
+def launch_training(config, dirs) -> None:
     """
     Initialize and launch the training process.
 
@@ -450,7 +456,7 @@ def launch_training(config, dirs, device: str) -> None:
         dirs (Dict[str, str]): Paths to necessary directories.
         device (str): Device to train on.
     """
-    data_loader = get_data_loader(config, device=device)
+    data_loader = get_data_loader(config)
 
     # Initialize the model
     last_checkpoint = (
@@ -464,7 +470,6 @@ def launch_training(config, dirs, device: str) -> None:
             data_shape=config["data"]["shape"],
             num_categories=config["embedding"]["num_categories"],
             embedding_dim=config["embedding"]["dim"],
-            lambda_angle=config["training"]["lambda_angle"],
             learning_rate=config["training"]["learning_rate"],
             lr_decay=config["training"]["lr_decay"],
             **config["model"],
@@ -493,9 +498,8 @@ def launch_training(config, dirs, device: str) -> None:
     )
 
     # Test basic functionality before training begins
-    test_inspect_data(data_loader)
-    inference_callback = callbacks["inference_callback"]
-    inference_callback.run_manual_inference(trainer, model)
+    # inference_callback: InferenceCallback = callbacks["inference_callback"]
+    # inference_callback.run_manual_inference(trainer, model)
 
     # Start training
     trainer.fit(model, data_loader, ckpt_path=last_checkpoint)
@@ -526,7 +530,6 @@ def load_model(
     model.to(device)
     model.eval()
     return model
-
 
 def run_inference(
     dirs,
@@ -568,7 +571,10 @@ def run_inference(
     if hasattr(model, "ema_callback"):
         model.ema_callback.apply_ema_weights(model)
 
-    solver = ODEFlowSolver(model=model.net, rtol=1e-6)
+    # Wrapper function to align the call signature
+    def dxdt_cond(x, time, *args, **kwargs):
+        return model.forward(x, ATb=ATb, time=time, *args, **kwargs)       
+    solver = ODEFlowSolver(model=dxdt_cond, rtol=1e-6)  
 
     t0, tf = 0.001, 1.0
     n_steps = 16
@@ -681,13 +687,11 @@ def main() -> None:
     config = get_config()
     dirs = setup_directories(config)
 
-    device = config["devices"]
-
-    run_training = False
-    run_inference_flag = True
+    run_training = True
+    run_inference_flag = False
 
     if run_training:
-        launch_training(config, dirs, device)
+        launch_training(config, dirs)
 
     if run_inference_flag:
 

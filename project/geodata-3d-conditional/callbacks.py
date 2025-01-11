@@ -11,6 +11,7 @@ from lightning.pytorch.loggers import WandbLogger
 import torch.nn.functional as F
 
 from flowtrain.solvers import ODEFlowSolver
+from functools import partial
 
 class InferenceCallback(Callback):
     """
@@ -58,7 +59,7 @@ class InferenceCallback(Callback):
                 self.run_inference(pl_module, epoch, trainer.logger)
 
     @torch.no_grad()
-    def run_inference(self, pl_module: LightningModule, epoch: int, logger: WandbLogger, uncertainty=True):
+    def run_inference(self, pl_module: LightningModule, epoch: int, logger: WandbLogger, ATb=None, uncertainty=True):
         print(f"Running inference for epoch {epoch}")
         net = pl_module.net
         emb = pl_module.embedding
@@ -66,9 +67,16 @@ class InferenceCallback(Callback):
         net.eval()
         emb.eval()
         
-        solver = ODEFlowSolver(model=net, rtol=1e-6)
         self.generator.manual_seed(self.seed)
         X0 = torch.randn(self.n_samples, pl_module.embedding_dim, *pl_module.data_shape, generator=self.generator).to(pl_module.device)
+        if ATb is None:
+            ATb = torch.zeros_like(X0)
+        assert ATb.shape == X0.shape, "ATb must have the same shape as X0 (model data input)"    
+        
+        # Wrapper function to align the call signature
+        def dxdt_cond(x, time, *args, **kwargs):
+            return net.forward(x, ATb=ATb, time=time, *args, **kwargs)       
+        solver = ODEFlowSolver(model=dxdt_cond, rtol=1e-6)    
         start = clock.time()
         solution = solver.solve(X0, t0=self.t0, tf=self.tf, n_steps=self.n_steps)
         stop = clock.time()
