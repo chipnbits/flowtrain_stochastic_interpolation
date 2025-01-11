@@ -52,7 +52,9 @@ def model_test(
         inference_seed=42,
     )  # [T, B, C, X, Y, Z]
     sol_tf = inv_solutions[-1]  # [B, C, X, Y, Z]
-    sol_decoded = model.decode(sol_tf).detach().cpu() - 1  # [B, 1, X, Y, Z] (bump back down to -1)
+    sol_decoded = (
+        model.decode(sol_tf).detach().cpu() - 1
+    )  # [B, 1, X, Y, Z] (bump back down to -1)
     show_solutions(sol_decoded)
 
 
@@ -78,12 +80,12 @@ def show_model_and_boreholes(model, boreholes):
     # Plot the synthetic model
     p.subplot(0, 0)
     m = GeoModel.from_tensor(model.squeeze().detach().cpu())
-    geovis.volview(m, plotter=p)
+    geovis.volview(m, plotter=p, show_bounds=True)
 
     # Select 2nd pane
     p.subplot(0, 1)
     bh = GeoModel.from_tensor(boreholes.squeeze().detach().cpu())
-    geovis.volview(bh, plotter=p)
+    geovis.volview(bh, plotter=p, show_bounds=True)
 
     p.show()
 
@@ -164,10 +166,30 @@ def run_inference(
     return solution
 
 
+def load_model_with_ema_option(
+    ckpt_path: str,
+    map_location: str = "cpu",
+    use_ema: bool = False,
+) -> Geo3DStochInterp:
+    checkpoint = torch.load(ckpt_path, map_location=map_location)
+    model = Geo3DStochInterp.load_from_checkpoint(ckpt_path, map_location=map_location)
+
+    if use_ema and "ema_shadow" in checkpoint:
+        print("Applying EMA shadow to model...")
+        for name, param in model.named_parameters():
+            if name in checkpoint["ema_shadow"]:
+                param.data.copy_(checkpoint["ema_shadow"][name].to(map_location))
+    elif use_ema:
+        print("WARNING: 'ema_shadow' not found in checkpoint. Using regular weights.")
+
+    return model
+
+
 def main() -> None:
     cfg = get_config()
     dirs = setup_directories(cfg)
 
+    use_ema = False  # or False
     inference_device = "cuda"
     relative_checkpoint_path = os.path.join(
         "saved_models",
@@ -177,9 +199,11 @@ def main() -> None:
 
     script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
     checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
-
-    model = Geo3DStochInterp.load_from_checkpoint(
-        checkpoint_path, map_location=inference_device
+    
+    model = load_model_with_ema_option(
+        ckpt_path=checkpoint_path,
+        map_location=inference_device,
+        use_ema=use_ema,
     ).to(inference_device)
 
     model_test(

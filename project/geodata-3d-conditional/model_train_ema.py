@@ -53,12 +53,12 @@ def get_config() -> dict:
         "devices": [0, 1, 2],  # This will be adjusted automatically below
         # Project configurations
         "project": {
-            "name": "18d-embeddings-conditional",
+            "name": "18d-embeddings-conditional-16x16x16-ema",
             "root_dir": os.path.dirname(os.path.abspath(__file__)),
         },
         # Data loader configurations
         "data": {
-            "shape": (16,16,16),  # [C, X, Y, Z]
+            "shape": (16, 16, 16),  # [C, X, Y, Z]
             "bounds": (
                 (-1920, 1920),
                 (-1920, 1920),
@@ -103,6 +103,12 @@ def get_config() -> dict:
             "gradient_clip_val": 1.0,
             "accumulate_grad_batches": 4,
             "log_every_n_steps": 10,
+            # --- EMA configuration ---
+            "use_ema": True,
+            "ema_decay": 0.9999,
+            "ema_start_step": 0,
+            "ema_update_every": 1,
+            "ema_update_on_cpu": True,
         },
         # Inference parameters
         "inference": {
@@ -185,10 +191,19 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
         ),
     }
 
+    if config["training"].get("use_ema", False):
+        ema_cb = EMACallback(
+            decay=config["training"]["ema_decay"],
+            start_step=config["training"]["ema_start_step"],
+            update_every=config["training"]["ema_update_every"],
+            update_on_cpu=config["training"]["ema_update_on_cpu"],
+        )
+        callbacks["ema_callback"] = ema_cb
+
     return callbacks
 
 
-def get_data_loader(config: dict, device: str = 'cpu') -> DataLoader:
+def get_data_loader(config: dict, device: str = "cpu") -> DataLoader:
     """
     Initialize the data loader for training.
 
@@ -247,8 +262,8 @@ class Geo3DStochInterp(LightningModule):
         num_categories: int = 15,
         embedding_dim: int = 20,
         lambda_reconstruct: float = 1.0,
-        learning_rate: float = 2e-3,  
-        lr_decay: float = 0.997,  
+        learning_rate: float = 2e-3,
+        lr_decay: float = 0.997,
         **model_params: Any,
     ):
         super().__init__()
@@ -314,7 +329,9 @@ class Geo3DStochInterp(LightningModule):
         The E dimension holds the vector representation of the category.
         """
 
-        indices = x.squeeze(1).long() + 1  # Adjust indices if needed (air starts as -1 so bump up by 1)
+        indices = (
+            x.squeeze(1).long() + 1
+        )  # Adjust indices if needed (air starts as -1 so bump up by 1)
         embedded = self.embedding(indices)  # [B, X, Y, Z, E]
         embedded = embedded.permute(0, 4, 1, 2, 3).contiguous()  # [B, E, X, Y, Z]
         return embedded
@@ -374,13 +391,15 @@ class Geo3DStochInterp(LightningModule):
         Returns:
             torch.Tensor: Loss value.
         """
-        
+
         # Draw encoded geogen model. Small noise is added to prevent singularities.
         X1 = self.embed(batch)  # [B, E, X, Y, Z]
-        mask_boreholes = make_boreholes_mask(batch).expand(-1, X1.shape[1], -1, -1, -1) # [B, E, X, Y, Z]     
-        b = X1[mask_boreholes]  # [N_masked, E] 
+        mask_boreholes = make_boreholes_mask(batch).expand(
+            -1, X1.shape[1], -1, -1, -1
+        )  # [B, E, X, Y, Z]
+        b = X1[mask_boreholes]  # [N_masked, E]
         ATb = X1 * mask_boreholes
-        X1 = X1 + 1e-3 * torch.randn_like(X1)     
+        X1 = X1 + 1e-3 * torch.randn_like(X1)
 
         X0 = torch.randn_like(X1)  # [B, E, X, Y, Z]
 
@@ -392,14 +411,16 @@ class Geo3DStochInterp(LightningModule):
         # Compute objectives
         XT, BT = self.interpolator.flow_objective(T, X0, X1)
         BT_hat = self.net(XT, ATb, T)  # [B, E, X, Y, Z]
-        
+
         T_broadcasted = T.view(-1, 1, 1, 1, 1)  # Shape: [6, 1, 1, 1, 1]
-        b_hat = XT[mask_boreholes] + ((1-T_broadcasted) * BT_hat)[mask_boreholes]  # [B, E, X, Y, Z]
-        
+        b_hat = (
+            XT[mask_boreholes] + ((1 - T_broadcasted) * BT_hat)[mask_boreholes]
+        )  # [B, E, X, Y, Z]
+
         # Compute losses
         mse_loss = F.mse_loss(BT, BT_hat) / F.mse_loss(BT, torch.zeros_like(BT))
         reconstruct_loss = F.mse_loss(b, b_hat) / F.mse_loss(X1, torch.zeros_like(X1))
-        
+
         # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
         loss = mse_loss + self.lambda_reconstruct * reconstruct_loss
 
@@ -423,7 +444,6 @@ class Geo3DStochInterp(LightningModule):
         # Log the learning rate at the end of each epoch
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("lr", lr, on_epoch=True, logger=True)
-        # self._log_embedding_gram_matrix()
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """
@@ -434,17 +454,6 @@ class Geo3DStochInterp(LightningModule):
             optimizer, gamma=self.hparams.lr_decay
         )
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
-
-    # def on_save_checkpoint(self, checkpoint):
-
-    #     checkpoint["ema_shadow"] = (
-    #         self.ema_shadow
-    #     )  # Save the EMA weights to the checkpoint
-
-    # def on_load_checkpoint(self, checkpoint):
-    #     self.ema_shadow = checkpoint[
-    #         "ema_shadow"
-    #     ]  # Load the EMA weights from the checkpoint
 
 
 def launch_training(config, dirs) -> None:
@@ -457,15 +466,11 @@ def launch_training(config, dirs) -> None:
         device (str): Device to train on.
     """
     data_loader = get_data_loader(config)
-
-    # Initialize the model
     last_checkpoint = (
         find_latest_checkpoint(dirs["checkpoint_dir"]) if config["resume"] else None
     )
-    if config["resume"] and last_checkpoint:
-        model = Geo3DStochInterp.load_from_checkpoint(last_checkpoint)
-        print(f"Resuming training from checkpoint: {last_checkpoint}")
-    else:
+
+    if last_checkpoint is None:
         model = Geo3DStochInterp(
             data_shape=config["data"]["shape"],
             num_categories=config["embedding"]["num_categories"],
@@ -474,7 +479,9 @@ def launch_training(config, dirs) -> None:
             lr_decay=config["training"]["lr_decay"],
             **config["model"],
         )
-        last_checkpoint = None
+    else:
+        model = None
+        print(f"Resuming training from checkpoint: {last_checkpoint}")
 
     # Configure Weights & Biases logger
     logger = WandbLogger(
@@ -483,26 +490,28 @@ def launch_training(config, dirs) -> None:
     logger.log_hyperparams(config)
 
     # Create callbacks
-    callbacks = create_callbacks(config, dirs)
-    callbacks_as_list = list(callbacks.values())
+    callbacks_dict = create_callbacks(config, dirs)
+    callbacks_list = list(callbacks_dict.values())
 
     # Initialize Trainer
     trainer = Trainer(
         max_epochs=config["training"]["max_epochs"],
         devices=config["devices"],
         logger=logger,
-        callbacks=callbacks_as_list,
+        callbacks=callbacks_list,
         gradient_clip_val=config["training"]["gradient_clip_val"],
         accumulate_grad_batches=config["training"]["accumulate_grad_batches"],
         log_every_n_steps=config["training"]["log_every_n_steps"],
     )
 
+    trainer.ema_callback = callbacks_dict.get("ema_callback", None)
+
     # Test basic functionality before training begins
     # inference_callback: InferenceCallback = callbacks["inference_callback"]
     # inference_callback.run_manual_inference(trainer, model)
 
-    # Start training
-    trainer.fit(model, data_loader, ckpt_path=last_checkpoint)
+    # Restore case with None for model will load all callbacks (EMA etc)
+    trainer.fit(model=model, train_dataloaders=data_loader, ckpt_path=last_checkpoint)
 
 
 def load_model(
@@ -552,7 +561,6 @@ def main() -> None:
     dirs = setup_directories(config)
 
     launch_training(config, dirs)
-
 
 
 if __name__ == "__main__":

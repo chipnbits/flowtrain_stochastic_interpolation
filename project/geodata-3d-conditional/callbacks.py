@@ -53,6 +53,7 @@ class InferenceCallback(Callback):
             # Use EMA weights if available
             if hasattr(trainer, "ema_callback"):
                 trainer.ema_callback.apply_ema_weights(pl_module)
+                print("Using EMA weights for inference.")
                 self.run_inference(pl_module, epoch, trainer.logger)
                 trainer.ema_callback.restore_original_weights(pl_module)
             else:
@@ -197,44 +198,101 @@ class EMACallback(Callback):
     
     """
 
-    def __init__(self, decay=0.9999, start_step=15000):
+    def __init__(self, decay=0.9999, start_step=15000, update_every=1, update_on_cpu=True):
         super().__init__()
         self.decay = decay
         self.start_step = start_step
+        self.update_every = update_every
+        self.update_on_cpu = update_on_cpu
+        
         self.shadow = {}
+        self.backup = {}
         self.step = 0
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         self.step += 1
-        if self.step >= self.start_step:
-            # Update the EMA weights
-            with torch.no_grad():
-                alpha = self.decay
-                for name, param in pl_module.named_parameters():
-                    if param.requires_grad:
-                        if name in self.shadow:
-                            self.shadow[name] = alpha * self.shadow[name] + (1 - alpha) * param.data
-                        else:
-                            self.shadow[name] = param.data.clone()
+        if self.step < self.start_step:
+            return  # Do not apply EMA updates too early
+        
+        if self.step % self.update_every != 0:
+            return  # Update less frequently if desired
+
+        # Update the EMA weights
+        with torch.no_grad():
+            alpha = self.decay
+            for name, param in pl_module.named_parameters():
+                if not param.requires_grad:
+                    continue
+
+                # Initialize shadow if not present
+                if name not in self.shadow:
+                    if self.update_on_cpu:
+                        self.shadow[name] = param.data.detach().cpu().clone()
+                    else:
+                        self.shadow[name] = param.data.detach().clone()  # Stays on GPU
+                else:
+                    if self.update_on_cpu:
+                        shadow_cpu = self.shadow[name]
+                        param_cpu = param.data.detach().cpu()
+                        shadow_cpu = alpha * shadow_cpu + (1.0 - alpha) * param_cpu
+                        self.shadow[name] = shadow_cpu
+                    else:
+                        shadow_gpu = self.shadow[name]  
+                        shadow_gpu = alpha * shadow_gpu + (1.0 - alpha) * param.data
+                        self.shadow[name] = shadow_gpu
 
     def on_validation_start(self, trainer, pl_module):
-        # Apply EMA weights for validation
-        self.apply_ema_weights(pl_module)
+        """
+        Before validation, back up the current weights and load EMA weights for evaluation.
+        """
+        self._backup_and_apply_ema(pl_module)
 
     def on_validation_end(self, trainer, pl_module):
-        # Restore original weights after validation
-        self.restore_original_weights(pl_module)
-
-    def apply_ema_weights(self, pl_module):
-        for name, param in pl_module.named_parameters():
-            if name in self.shadow:
-                param.data.copy_(self.shadow[name])
-
-    def restore_original_weights(self, pl_module):
-        for name, param in pl_module.named_parameters():
-            if name in self.shadow:
-                param.data.copy_(self.shadow[name])
+        """
+        After validation, restore the original trained weights.
+        """
+        self._restore_original_weights(pl_module)
 
     def on_train_end(self, trainer, pl_module):
-        # Optionally apply EMA weights as final model weights
-        self.apply_ema_weights(pl_module)
+        """
+        apply EMA weights permanently at the end of training.
+        """
+        self._backup_and_apply_ema(pl_module)
+
+    def _backup_and_apply_ema(self, pl_module):
+        """
+        Save the current weights to self.backup, then replace model params with EMA weights.
+        """
+        self.backup.clear()
+        for name, param in pl_module.named_parameters():
+            # Store the original weights (always on CPU)
+            self.backup[name] = param.data.detach().cpu().clone()
+
+            # If there's a shadow version, copy it to the device
+            if name in self.shadow:
+                # If stored on CPU, move to the param's device; if stored on GPU, just copy
+                param.data.copy_(self.shadow[name].to(param.device))
+
+    def _restore_original_weights(self, pl_module):
+        """
+        Restore the original (non-EMA) weights that were saved in _backup_and_apply_ema.
+        """
+        for name, param in pl_module.named_parameters():
+            if name in self.backup:
+                param.data.copy_(self.backup[name].to(param.device))
+
+    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
+        """
+        Save the shadow dictionary to the checkpoint so it can be reloaded upon resume.
+        """
+        checkpoint["ema_shadow"] = self.shadow
+        checkpoint["ema_update_on_cpu"] = self.update_on_cpu
+
+    def on_load_checkpoint(self, trainer, pl_module, checkpoint):
+        """
+        Restore the shadow dictionary if it exists in the checkpoint.
+        """
+        if "ema_shadow" in checkpoint:
+            self.shadow = checkpoint["ema_shadow"]
+        if "ema_update_on_cpu" in checkpoint:
+            self.update_on_cpu = checkpoint["ema_update_on_cpu"]
