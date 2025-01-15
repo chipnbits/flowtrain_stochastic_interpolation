@@ -189,17 +189,20 @@ def main() -> None:
     cfg = get_config()
     dirs = setup_directories(cfg)
 
-    use_ema = False  # or False
+    use_ema = True  # or False
     inference_device = "cuda"
+    # relative_checkpoint_path = os.path.join(
+    #     "saved_models",
+    #     "18d-embeddings-conditional",
+    #     "topk-epoch=1371-train_loss=0.0245.ckpt",
+    # )
     relative_checkpoint_path = os.path.join(
-        "saved_models",
-        "18d-embeddings-conditional-16x16x16-ema",
-        "epoch=1999-step=106000.ckpt",
+        "saved_models", "18d-embeddings-conditional-16x16x16-ema", "last.ckpt"
     )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
     checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
-    
+
     model = load_model_with_ema_option(
         ckpt_path=checkpoint_path,
         map_location=inference_device,
@@ -211,6 +214,7 @@ def main() -> None:
         inference_device,
         model=model,
         n_samples=9,
+        preview_boreholes=False,
     )
 
 

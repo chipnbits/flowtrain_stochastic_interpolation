@@ -198,7 +198,7 @@ class EMACallback(Callback):
     
     """
 
-    def __init__(self, decay=0.9999, start_step=15000, update_every=1, update_on_cpu=True):
+    def __init__(self, decay=0.9999, start_step=15000, update_every=1, update_on_cpu=False):
         super().__init__()
         self.decay = decay
         self.start_step = start_step
@@ -245,6 +245,7 @@ class EMACallback(Callback):
         """
         apply EMA weights permanently at the end of training.
         """
+        self.apply_ema_weights(pl_module)
         self.apply_ema_weights(pl_module)
 
     def apply_ema_weights(self, pl_module):
