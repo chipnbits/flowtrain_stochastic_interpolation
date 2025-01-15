@@ -9,7 +9,7 @@ from boreholes import make_boreholes_mask
 from geogen.dataset import GeoData3DStreamingDataset
 from geogen.model import GeoModel
 import geogen.plot as geovis
-from model_train import (
+from model_train_ema import (
     Geo3DStochInterp,
     get_config,
     setup_directories,
@@ -193,8 +193,8 @@ def main() -> None:
     inference_device = "cuda"
     relative_checkpoint_path = os.path.join(
         "saved_models",
-        "18d-embeddings-conditional",
-        "topk-epoch=1371-train_loss=0.0245.ckpt",
+        "18d-embeddings-conditional-16x16x16-ema",
+        "epoch=1999-step=106000.ckpt",
     )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
