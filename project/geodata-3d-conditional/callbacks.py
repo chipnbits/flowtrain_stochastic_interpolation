@@ -246,7 +246,6 @@ class EMACallback(Callback):
         apply EMA weights permanently at the end of training.
         """
         self.apply_ema_weights(pl_module)
-        self.apply_ema_weights(pl_module)
 
     def apply_ema_weights(self, pl_module):
         """
@@ -271,7 +270,10 @@ class EMACallback(Callback):
         """
         Save the shadow dictionary to the checkpoint so it can be reloaded upon resume.
         """
-        checkpoint["ema_shadow"] = self.shadow
+        checkpoint["ema_shadow"] = {
+            name: shadow.clone().cpu() if self.update_on_cpu else shadow.clone()
+            for name, shadow in self.shadow.items()
+        }
         checkpoint["ema_update_on_cpu"] = self.update_on_cpu
 
     def on_load_checkpoint(self, trainer, pl_module, checkpoint):
@@ -279,6 +281,9 @@ class EMACallback(Callback):
         Restore the shadow dictionary if it exists in the checkpoint.
         """
         if "ema_shadow" in checkpoint:
-            self.shadow = checkpoint["ema_shadow"]
+            self.shadow = {
+                name: shadow.clone().to("cpu" if self.update_on_cpu else pl_module.device)
+                for name, shadow in checkpoint["ema_shadow"].items()
+            }
         if "ema_update_on_cpu" in checkpoint:
             self.update_on_cpu = checkpoint["ema_update_on_cpu"]

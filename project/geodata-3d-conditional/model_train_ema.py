@@ -31,7 +31,7 @@ from boreholes import make_boreholes_mask
 from callbacks import EMACallback, InferenceCallback
 from geogen.dataset import GeoData3DStreamingDataset
 from flowtrain.interpolation import LinearInterpolant, StochasticInterpolator
-from flowtrain.models import Unet3DCond as Unet3D
+from flowtrain.models import Unet3DCondV2 as Unet3D
 from flowtrain.solvers import ODEFlowSolver
 
 from utils import (
@@ -39,7 +39,6 @@ from utils import (
     plot_cat_view,
     plot_static_views,
 )
-
 
 def get_config() -> dict:
     """
@@ -49,7 +48,100 @@ def get_config() -> dict:
         dict: Configuration dictionary.
     """
     config = {
-        "resume": False,
+        "resume": True,
+        "devices": [0, 1, 2],  # This will be adjusted automatically below
+        # Project configurations
+        "project": {
+            "name": "18d-embeddings-conditional-16x16x16-ema-boosted",
+            "root_dir": os.path.dirname(os.path.abspath(__file__)),
+        },
+        # Data loader configurations
+        "data": {
+            "shape": (16, 16, 16),  # [C, X, Y, Z]
+            "bounds": (
+                (-1920, 1920),
+                (-1920, 1920),
+                (-1920, 1920),
+            ),
+            "batch_size": 32,
+            "epoch_size": 10_000,
+        },
+        # Categorical embedding parameters
+        "embedding": {
+            "num_categories": 15,
+            "dim": 15,
+        },
+        # Model parameters
+        "model": {
+            "dim": 64,  # Base number of hidden channels in model
+            "dim_mults": (
+                1,
+                2,
+                4,
+                6,
+                6,
+            ),  # Multipliers for hidden dims in each superblock, total 2x downsamples = len(dim_mults)-1
+            "data_channels": 1,  # Data clamped down to fit categorical count
+            "dropout": 0.1,  # Optional network dropout
+            "self_condition": False,  # Optional conditioning on input data
+            "time_sin_pos": False,  # Use fixed sin/cos positional embeddings for time
+            "time_resolution": 1024,  # Resolution of time (number of random Fourier features)
+            "time_bandwidth": 1000.0,  # Starting bandwidth of fourier frequencies, f ~ N(0, time_bandwidth)
+            "time_learned_emb": True,  # Learnable fourier freqs and phases
+            "attn_enabled": True,  # Enable or disable self attention before each (down/up sample) also feeds skip connections
+            "attn_dim_head": 64,  # Size of attention hidden dimension heads
+            "attn_heads": 4,  # Number of chunks to split hidden dimension into for attention
+            "full_attn": None,  # defaults to full attention only for inner most layer final down, middle, first up
+            "flash_attn": False,  # For high performance GPUs https://github.com/Dao-AILab/flash-attention
+        },
+        # Training parameters
+        "training": {
+            "max_epochs": 3000,
+            "learning_rate": 1.0e-3,
+            "lr_decay": 0.997,
+            "gradient_clip_val": 1e-4,
+            "accumulate_grad_batches": 2,
+            "log_every_n_steps": 20,
+            # --- EMA configuration ---
+            "use_ema": True,
+            "ema_decay": 0.9995,
+            "ema_start_step": 0,
+            "ema_update_every": 1,
+            "ema_update_on_cpu": False,
+        },
+        # Inference parameters
+        "inference": {
+            "seed": None,
+            "n_samples": 1,
+            "batch_size": 4,
+            "save_imgs": True,
+        },
+    }
+
+    # Dynamically set device configurations
+    if not config["devices"]:
+        system = platform.system()
+        if system == "Windows":
+            config["devices"] = ["cuda"] if torch.cuda.is_available() else ["cpu"]
+        elif system == "Linux":
+            config["devices"] = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
+        else:
+            config["devices"] = ["cpu"]
+
+    # Ensure model_params are updated with the embedding dimension
+    config["model"]["data_channels"] = config["embedding"]["dim"]
+
+    return config
+
+def get_config_ema_reg() -> dict:
+    """
+    Generates the entire configuration as a dictionary.
+
+    Returns:
+        dict: Configuration dictionary.
+    """
+    config = {
+        "resume": True,
         "devices": [0, 1, 2],  # This will be adjusted automatically below
         # Project configurations
         "project": {
@@ -258,7 +350,7 @@ class Geo3DStochInterp(LightningModule):
     def __init__(
         self,
         data_shape: Tuple[int, int, int] = (32, 32, 32),
-        time_range: List[float] = [0.0005, 0.9995],
+        time_range: List[float] = [0.0001, 0.9999],
         num_categories: int = 15,
         embedding_dim: int = 20,
         lambda_reconstruct: float = 1.0,
@@ -399,7 +491,7 @@ class Geo3DStochInterp(LightningModule):
         )  # [B, E, X, Y, Z]
         b = X1[mask_boreholes]  # [N_masked, E]
         ATb = X1 * mask_boreholes
-        X1 = X1 + 1e-3 * torch.randn_like(X1)
+        X1 = X1 + 1e-4 * torch.randn_like(X1)
 
         X0 = torch.randn_like(X1)  # [B, E, X, Y, Z]
 
@@ -418,8 +510,8 @@ class Geo3DStochInterp(LightningModule):
         )  # [B, E, X, Y, Z]
 
         # Compute losses
-        mse_loss = F.mse_loss(BT, BT_hat) / F.mse_loss(BT, torch.zeros_like(BT))
-        reconstruct_loss = F.mse_loss(b, b_hat) / F.mse_loss(X1, torch.zeros_like(X1))
+        mse_loss = F.mse_loss(BT, BT_hat) / (F.mse_loss(BT, torch.zeros_like(BT))+1e-6)
+        reconstruct_loss = F.mse_loss(b, b_hat) / (F.mse_loss(X1, torch.zeros_like(X1))+1e-6)
 
         # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
         loss = mse_loss + self.lambda_reconstruct * reconstruct_loss
@@ -480,7 +572,7 @@ def launch_training(config, dirs) -> None:
             **config["model"],
         )
     else:
-        model = None
+        model = Geo3DStochInterp.load_from_checkpoint(last_checkpoint)
         print(f"Resuming training from checkpoint: {last_checkpoint}")
 
     # Configure Weights & Biases logger
