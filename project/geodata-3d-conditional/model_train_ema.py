@@ -52,7 +52,7 @@ def get_config() -> dict:
         "devices": [0, 1, 2],  # This will be adjusted automatically below
         # Project configurations
         "project": {
-            "name": "18d-embeddings-conditional-16x16x16-ema-boosted",
+            "name": "15d-embeddings-conditional-16x16x16-ema-boosted",
             "root_dir": os.path.dirname(os.path.abspath(__file__)),
         },
         # Data loader configurations
@@ -511,17 +511,21 @@ class Geo3DStochInterp(LightningModule):
 
         # Compute losses
         mse_loss = F.mse_loss(BT, BT_hat) / (F.mse_loss(BT, torch.zeros_like(BT))+1e-6)
-        reconstruct_loss = F.mse_loss(b, b_hat) / (F.mse_loss(X1, torch.zeros_like(X1))+1e-6)
-
+        # Weight reconstruction loss by time
+        weighted_reconstruct_loss = (
+            T_broadcasted.squeeze() * F.mse_loss(b, b_hat)  # Multiply by T
+        ) / (F.mse_loss(X1, torch.zeros_like(X1)) + 1e-6)
+        weighted_reconstruct_loss = weighted_reconstruct_loss.mean()
+        
         # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
-        loss = mse_loss + self.lambda_reconstruct * reconstruct_loss
+        loss = mse_loss + self.lambda_reconstruct * weighted_reconstruct_loss
 
         # Log the training loss and orthogonality loss
         self.log_dict(
             {
                 "train_loss": loss,
                 "flow_loss": mse_loss,
-                "reconstruct_loss": reconstruct_loss,
+                "reconstruct_loss": weighted_reconstruct_loss,
             },
             on_step=True,
             on_epoch=True,
