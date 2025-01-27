@@ -103,17 +103,20 @@ def show_model_and_boreholes(model, boreholes):
 
     p.show()
 
+
 def save_model_and_boreholes(model, boreholes, save_dir):
     # Save the tensor data for the model and boreholes
     os.makedirs(save_dir, exist_ok=True)
     torch.save(model, os.path.join(save_dir, "true_model.pt"))
     torch.save(boreholes, os.path.join(save_dir, "boreholes.pt"))
-    
+
+
 def save_solutions(solutions, save_dir):
     # Save the tensor data for the solutions
     os.makedirs(save_dir, exist_ok=True)
     for i, sol in enumerate(solutions):
         torch.save(sol, os.path.join(save_dir, f"sol_{i}.pt"))
+
 
 def run_inference(
     device,
@@ -154,7 +157,7 @@ def run_inference(
 
     solver = ODEFlowSolver(model=dxdt_cond, rtol=1e-6)
 
-    # Option for 
+    # Option for
     generator = (
         torch.Generator(device="cpu").manual_seed(inference_seed)
         if inference_seed
@@ -191,23 +194,27 @@ def run_inference(
 
     return solution
 
+
 def save_model_and_boreholes(model, boreholes, save_dir):
     # Save the tensor data for the model and boreholes
     os.makedirs(save_dir, exist_ok=True)
     torch.save(model, os.path.join(save_dir, "true_model.pt"))
     torch.save(boreholes, os.path.join(save_dir, "boreholes.pt"))
-    
+
+
 def save_solutions(solutions, save_dir):
     # Save the tensor data for the solutions
     os.makedirs(save_dir, exist_ok=True)
     for i, sol in enumerate(solutions):
         torch.save(sol, os.path.join(save_dir, f"sol_{i}.pt"))
-        
+
+
 def load_model_and_boreholes(save_dir):
     # Load the tensor data for the model and boreholes
     model = torch.load(os.path.join(save_dir, "true_model.pt"))
     boreholes = torch.load(os.path.join(save_dir, "boreholes.pt"))
     return model, boreholes
+
 
 def load_solutions(save_dir):
     # index all files starting with "sol_" in the save_dir
@@ -215,7 +222,7 @@ def load_solutions(save_dir):
     solutions = [None] * len(sol_files)
     for i, sol_file in enumerate(sol_files):
         solutions[i] = torch.load(os.path.join(save_dir, sol_file))
-    
+
     # Turn into one tensor wit batch dimension
     return torch.stack(solutions)
 
@@ -238,20 +245,23 @@ def load_model_with_ema_option(
 
     return model
 
+
 def load_run_display(run_num):
     relative_sample_path = os.path.join(
         "samples",
         "15d-conditional-64x64x64-ema-mixedpres-lowvram",
-        f"run_{run_num}",)
-    
+        f"run_{run_num}",
+    )
+
     script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
     sample_path = os.path.join(script_dir, relative_sample_path)
 
     model, boreholes = load_model_and_boreholes(sample_path)
-    solutions = load_solutions( sample_path)
-    
+    solutions = load_solutions(sample_path)
+
     show_model_and_boreholes(model, boreholes)
     show_solutions(solutions)
+
 
 def main() -> None:
     cfg = get_config()
@@ -283,6 +293,7 @@ def main() -> None:
             n_samples=9,
             run_num=i,
         )
+
 
 if __name__ == "__main__":
     # main()

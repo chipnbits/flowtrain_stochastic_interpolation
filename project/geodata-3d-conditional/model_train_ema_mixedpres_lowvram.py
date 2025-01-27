@@ -48,8 +48,8 @@ def get_config() -> dict:
     Returns:
         dict: Configuration dictionary.
     """
-    devices = [ 0, 1, 2]  # List of GPU devices to use
-    
+    devices = [0, 1, 2]  # List of GPU devices to use
+
     config = {
         "resume": True,
         "devices": devices,
@@ -60,7 +60,7 @@ def get_config() -> dict:
         },
         # Data loader configurations
         "data": {
-            "shape": (64,64,64),  # [C, X, Y, Z]
+            "shape": (64, 64, 64),  # [C, X, Y, Z]
             "bounds": (
                 (-1920, 1920),
                 (-1920, 1920),
@@ -103,7 +103,7 @@ def get_config() -> dict:
             "learning_rate": 5.0e-4,
             "lr_decay": 0.999,
             "gradient_clip_val": 1e-2,
-            "accumulate_grad_batches": int(4 * 3/len(devices)),
+            "accumulate_grad_batches": int(4 * 3 / len(devices)),
             "log_every_n_steps": 16,
             # --- EMA configuration ---
             "use_ema": True,
@@ -420,12 +420,11 @@ class Geo3DStochInterp(LightningModule):
         )  # [B, E, X, Y, Z]
 
         # Compute losses
-        mse_loss = F.mse_loss(BT, BT_hat) / (
-            F.mse_loss(BT, torch.zeros_like(BT))
-        )
+        mse_loss = F.mse_loss(BT, BT_hat) / (F.mse_loss(BT, torch.zeros_like(BT)))
         # Weight reconstruction loss by time
         weighted_reconstruct_loss = (
-            T_broadcasted.squeeze() * F.mse_loss(b, b_hat)  # Multiply by T
+            T_broadcasted.squeeze()
+            * F.mse_loss(b, b_hat)  # Multiply by T to unweight early times
         ) / (F.mse_loss(X1, torch.zeros_like(X1)))
         weighted_reconstruct_loss = weighted_reconstruct_loss.mean()
 
@@ -452,16 +451,13 @@ class Geo3DStochInterp(LightningModule):
         # Log the learning rate at the end of each epoch
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("lr", lr, on_epoch=True, logger=True)
-    
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """
         Configure Adafactor optimizer and learning rate scheduler.
         """
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.learning_rate)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            optimizer, gamma=.999
-        )
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.999)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
 
@@ -490,7 +486,6 @@ def launch_training(config, dirs) -> None:
         )
     else:
         model = Geo3DStochInterp.load_from_checkpoint(last_checkpoint)
-
 
     # Configure Weights & Biases logger
     logger = WandbLogger(
