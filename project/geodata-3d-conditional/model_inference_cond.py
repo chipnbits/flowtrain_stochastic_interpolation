@@ -19,11 +19,20 @@ from model_train_ema_mixedpres_lowvram import (
 
 
 def model_test(
-    dirs, device, model: Geo3DStochInterp = None, n_samples=9, preview_boreholes=True
+    dirs,
+    device,
+    model: Geo3DStochInterp = None,
+    n_samples=9,
+    preview_boreholes=True,
+    run_num=0,
 ):
     """
     Draw a random model, create boreholes, run inference to reconstruct the model, save results.
     """
+    save_dir = dirs["samples_dir"]
+    # Put into a run number directory
+    save_dir = os.path.join(save_dir, f"run_{run_num}")
+
     dataset = GeoData3DStreamingDataset(
         model_resolution=model.data_shape,
         model_bounds=((-1920, 1920), (-1920, 1920), (-1920, 1920)),
@@ -36,7 +45,10 @@ def model_test(
     boreholes = synthetic_model.clone()
     boreholes[~boreholes_mask] = -1  # delete rock around boreholes
 
-    preview_boreholes and show_model_and_boreholes(synthetic_model, boreholes)
+    # preview_boreholes and show_model_and_boreholes(synthetic_model, boreholes)
+
+    # Save the original model and boreholes
+    save_model_and_boreholes(synthetic_model, boreholes, save_dir)
 
     X1 = model.embed(synthetic_model)  # [1, C, X, Y, Z]
     ATb = X1.clone()
@@ -55,7 +67,9 @@ def model_test(
     sol_decoded = (
         model.decode(sol_tf).detach().cpu() - 1
     )  # [B, 1, X, Y, Z] (bump back down to -1)
-    show_solutions(sol_decoded)
+
+    # show_solutions(sol_decoded)
+    save_solutions(sol_decoded, save_dir)
 
 
 def show_solutions(solutions):
@@ -89,6 +103,17 @@ def show_model_and_boreholes(model, boreholes):
 
     p.show()
 
+def save_model_and_boreholes(model, boreholes, save_dir):
+    # Save the tensor data for the model and boreholes
+    os.makedirs(save_dir, exist_ok=True)
+    torch.save(model, os.path.join(save_dir, "true_model.pt"))
+    torch.save(boreholes, os.path.join(save_dir, "boreholes.pt"))
+    
+def save_solutions(solutions, save_dir):
+    # Save the tensor data for the solutions
+    os.makedirs(save_dir, exist_ok=True)
+    for i, sol in enumerate(solutions):
+        torch.save(sol, os.path.join(save_dir, f"sol_{i}.pt"))
 
 def run_inference(
     device,
@@ -123,12 +148,13 @@ def run_inference(
     if data_shape is None:
         data_shape = model.data_shape
 
-    # Wrapper function to align the call signature
+    # Wrapper function to add conditioning data to the x,t based ODE
     def dxdt_cond(x, time, *args, **kwargs):
         return model.net.forward(x, ATb=ATb, time=time, *args, **kwargs)
 
     solver = ODEFlowSolver(model=dxdt_cond, rtol=1e-6)
 
+    # Option for 
     generator = (
         torch.Generator(device="cpu").manual_seed(inference_seed)
         if inference_seed
@@ -231,13 +257,8 @@ def main() -> None:
     cfg = get_config()
     dirs = setup_directories(cfg)
 
-    use_ema = True  # or False
+    use_ema = False  # or False
     inference_device = "cuda"
-    # relative_checkpoint_path = os.path.join(
-    #     "saved_models",
-    #     "18d-embeddings-conditional",
-    #     "topk-epoch=1371-train_loss=0.0245.ckpt",
-    # )
     relative_checkpoint_path = os.path.join(
         "saved_models",
         "15d-conditional-64x64x64-ema-mixedpres-lowvram",
@@ -253,12 +274,15 @@ def main() -> None:
         use_ema=use_ema,
     ).to(inference_device)
 
-    model_test(
-        dirs,
-        inference_device,
-        model=model,
-        n_samples=4,
-    )
+    # Generate 10 models
+    for i in range(10):
+        model_test(
+            dirs,
+            inference_device,
+            model=model,
+            n_samples=9,
+            run_num=i,
+        )
 
 if __name__ == "__main__":
     # main()

@@ -112,7 +112,7 @@ class Downsample(Module):
 class EmbedATb(nn.Module):
     """
     Takes an 'opened' ATb and embeds it to the same dimension (C_out) and
-    spatial size as the current resolution scale in the U-Net.
+    spatial size as the current resolution scale in the U-Net, i.e. 1/4 scaled at 2 steps down the Unet.
 
     Input: (B, C_in, H, W, D)
     Output: (B, C_out, H_out, W_out, D_out)
@@ -146,7 +146,7 @@ class MixATb(nn.Module):
 
     Input: (B, C_in, H, W, D) and (B, C_in, H, W, D)
     Output: (B, C_in, H, W, D)
-    
+
     Parameters:
     dim_in: int
         Number of input channels (same for ATb and x)
@@ -159,9 +159,9 @@ class MixATb(nn.Module):
         dim,
         time_emb_dim=None,
     ):
-        super().__init__()            
+        super().__init__()
         self.dim = dim
-        
+
         self.time_mlp = (
             nn.Sequential(nn.SiLU(), nn.Linear(time_emb_dim, dim * 4))
             if exists(time_emb_dim)
@@ -175,19 +175,20 @@ class MixATb(nn.Module):
 
     def forward(self, x, ATb, t):
         ATb_x = torch.cat((x, ATb), dim=1)
-        
+
         if exists(self.time_mlp) and exists(t):
             t = self.time_mlp(t)
             t = rearrange(t, "b c -> b c 1 1 1")
             scale, shift = t.chunk(2, dim=1)
             ATb_x = ATb_x * (scale + 1) + shift
-        
+
         h = self.conv1(ATb_x)
         h = self.norm(h)
         h = self.act(h)
         h = self.conv2(h)
-    
+
         return h + x
+
 
 class RMSNorm(Module):
     """
@@ -790,7 +791,7 @@ class Unet3DCond(Module):
         for ATb_embed, ATb_mix, block1, block2, attn, downsample in self.downs:
 
             atb_scaled = ATb_embed(ATb_opened)
-            x = ATb_mix(x, atb_scaled, t)            
+            x = ATb_mix(x, atb_scaled, t)
 
             x = block1(x, t)
             h.append(x)
@@ -809,7 +810,7 @@ class Unet3DCond(Module):
 
         for ATb_embed, ATb_mix, block1, block2, attn, upsample in self.ups:
             atb_scaled = ATb_embed(ATb_opened)
-            x = ATb_mix(x, atb_scaled, t)    
+            x = ATb_mix(x, atb_scaled, t)
 
             x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
