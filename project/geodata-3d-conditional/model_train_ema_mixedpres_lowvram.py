@@ -31,7 +31,7 @@ from boreholes import make_boreholes_mask
 from callbacks import EMACallback, InferenceCallback
 from geogen.dataset import GeoData3DStreamingDataset
 from flowtrain.interpolation import LinearInterpolant, StochasticInterpolator
-from flowtrain.models import Unet3DCondV2 as Unet3D
+from flowtrain.models import Unet3DCondV3 as Unet3D
 from flowtrain.solvers import ODEFlowSolver
 
 from utils import (
@@ -40,6 +40,7 @@ from utils import (
     plot_static_views,
 )
 
+
 def get_config() -> dict:
     """
     Generates the entire configuration as a dictionary.
@@ -47,23 +48,25 @@ def get_config() -> dict:
     Returns:
         dict: Configuration dictionary.
     """
+    devices = [ 0, 1, 2]  # List of GPU devices to use
+    
     config = {
-        "resume": False,
-        "devices": [0, 1, 2],  # This will be adjusted automatically below
+        "resume": True,
+        "devices": devices,
         # Project configurations
         "project": {
-            "name": "15d-embeddings-conditional-16x16x16-ema-boosted",
+            "name": "15d-conditional-64x64x64-ema-mixedpres-lowvram",
             "root_dir": os.path.dirname(os.path.abspath(__file__)),
         },
         # Data loader configurations
         "data": {
-            "shape": (16, 16, 16),  # [C, X, Y, Z]
+            "shape": (64,64,64),  # [C, X, Y, Z]
             "bounds": (
                 (-1920, 1920),
                 (-1920, 1920),
                 (-1920, 1920),
             ),
-            "batch_size": 32,
+            "batch_size": 8,
             "epoch_size": 10_000,
         },
         # Categorical embedding parameters
@@ -73,103 +76,10 @@ def get_config() -> dict:
         },
         # Model parameters
         "model": {
-            "dim": 64,  # Base number of hidden channels in model
-            "dim_mults": (
-                1,
-                2,
-                4,
-                6,
-                6,
-            ),  # Multipliers for hidden dims in each superblock, total 2x downsamples = len(dim_mults)-1
-            "data_channels": 1,  # Data clamped down to fit categorical count
-            "dropout": 0.1,  # Optional network dropout
-            "self_condition": False,  # Optional conditioning on input data
-            "time_sin_pos": False,  # Use fixed sin/cos positional embeddings for time
-            "time_resolution": 1024,  # Resolution of time (number of random Fourier features)
-            "time_bandwidth": 1000.0,  # Starting bandwidth of fourier frequencies, f ~ N(0, time_bandwidth)
-            "time_learned_emb": True,  # Learnable fourier freqs and phases
-            "attn_enabled": True,  # Enable or disable self attention before each (down/up sample) also feeds skip connections
-            "attn_dim_head": 64,  # Size of attention hidden dimension heads
-            "attn_heads": 4,  # Number of chunks to split hidden dimension into for attention
-            "full_attn": None,  # defaults to full attention only for inner most layer final down, middle, first up
-            "flash_attn": False,  # For high performance GPUs https://github.com/Dao-AILab/flash-attention
-        },
-        # Training parameters
-        "training": {
-            "max_epochs": 3000,
-            "learning_rate": 1.0e-3,
-            "lr_decay": 0.997,
-            "gradient_clip_val": 1e-4,
-            "accumulate_grad_batches": 2,
-            "log_every_n_steps": 20,
-            # --- EMA configuration ---
-            "use_ema": True,
-            "ema_decay": 0.9995,
-            "ema_start_step": 0,
-            "ema_update_every": 1,
-            "ema_update_on_cpu": False,
-        },
-        # Inference parameters
-        "inference": {
-            "seed": None,
-            "n_samples": 1,
-            "batch_size": 4,
-            "save_imgs": True,
-        },
-    }
-
-    # Dynamically set device configurations
-    if not config["devices"]:
-        system = platform.system()
-        if system == "Windows":
-            config["devices"] = ["cuda"] if torch.cuda.is_available() else ["cpu"]
-        elif system == "Linux":
-            config["devices"] = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
-        else:
-            config["devices"] = ["cpu"]
-
-    # Ensure model_params are updated with the embedding dimension
-    config["model"]["data_channels"] = config["embedding"]["dim"]
-
-    return config
-
-def get_config_ema_reg() -> dict:
-    """
-    Generates the entire configuration as a dictionary.
-
-    Returns:
-        dict: Configuration dictionary.
-    """
-    config = {
-        "resume": True,
-        "devices": [0, 1, 2],  # This will be adjusted automatically below
-        # Project configurations
-        "project": {
-            "name": "18d-embeddings-conditional-16x16x16-ema",
-            "root_dir": os.path.dirname(os.path.abspath(__file__)),
-        },
-        # Data loader configurations
-        "data": {
-            "shape": (16, 16, 16),  # [C, X, Y, Z]
-            "bounds": (
-                (-1920, 1920),
-                (-1920, 1920),
-                (-1920, 1920),
-            ),
-            "batch_size": 32,
-            "epoch_size": 10_000,
-        },
-        # Categorical embedding parameters
-        "embedding": {
-            "num_categories": 15,
-            "dim": 18,
-        },
-        # Model parameters
-        "model": {
             "dim": 48,  # Base number of hidden channels in model
             "dim_mults": (
                 1,
-                1,
+                2,
                 2,
                 3,
                 4,
@@ -189,15 +99,15 @@ def get_config_ema_reg() -> dict:
         },
         # Training parameters
         "training": {
-            "max_epochs": 2000,
-            "learning_rate": 2.0e-3,
-            "lr_decay": 0.997,
-            "gradient_clip_val": 1.0,
-            "accumulate_grad_batches": 2,
-            "log_every_n_steps": 10,
+            "max_epochs": 3000,
+            "learning_rate": 5.0e-4,
+            "lr_decay": 0.999,
+            "gradient_clip_val": 1e-2,
+            "accumulate_grad_batches": int(4 * 3/len(devices)),
+            "log_every_n_steps": 16,
             # --- EMA configuration ---
             "use_ema": True,
-            "ema_decay": 0.9999,
+            "ema_decay": 0.9995,
             "ema_start_step": 0,
             "ema_update_every": 1,
             "ema_update_on_cpu": False,
@@ -261,7 +171,7 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
         "top_k_checkpoint": ModelCheckpoint(
             dirpath=dirs["checkpoint_dir"],
             filename="topk-{epoch:02d}-{train_loss:.4f}",
-            save_top_k=1,
+            save_top_k=3,
             verbose=True,
             monitor="train_loss",
             mode="min",
@@ -275,7 +185,7 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
         ),
         "inference_callback": InferenceCallback(
             save_dir=dirs["photo_dir"],
-            every_n_epochs=5,
+            every_n_epochs=20,
             n_samples=4,
             n_steps=32,
             tf=0.999,
@@ -510,13 +420,15 @@ class Geo3DStochInterp(LightningModule):
         )  # [B, E, X, Y, Z]
 
         # Compute losses
-        mse_loss = F.mse_loss(BT, BT_hat) / (F.mse_loss(BT, torch.zeros_like(BT))+1e-6)
+        mse_loss = F.mse_loss(BT, BT_hat) / (
+            F.mse_loss(BT, torch.zeros_like(BT))
+        )
         # Weight reconstruction loss by time
         weighted_reconstruct_loss = (
             T_broadcasted.squeeze() * F.mse_loss(b, b_hat)  # Multiply by T
-        ) / (F.mse_loss(X1, torch.zeros_like(X1)) + 1e-6)
+        ) / (F.mse_loss(X1, torch.zeros_like(X1)))
         weighted_reconstruct_loss = weighted_reconstruct_loss.mean()
-        
+
         # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
         loss = mse_loss + self.lambda_reconstruct * weighted_reconstruct_loss
 
@@ -540,14 +452,15 @@ class Geo3DStochInterp(LightningModule):
         # Log the learning rate at the end of each epoch
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("lr", lr, on_epoch=True, logger=True)
+    
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """
-        Configure optimizers and learning rate schedulers.
+        Configure Adafactor optimizer and learning rate scheduler.
         """
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.learning_rate)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            optimizer, gamma=self.hparams.lr_decay
+            optimizer, gamma=.999
         )
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
@@ -577,7 +490,7 @@ def launch_training(config, dirs) -> None:
         )
     else:
         model = Geo3DStochInterp.load_from_checkpoint(last_checkpoint)
-        print(f"Resuming training from checkpoint: {last_checkpoint}")
+
 
     # Configure Weights & Biases logger
     logger = WandbLogger(
@@ -598,6 +511,7 @@ def launch_training(config, dirs) -> None:
         gradient_clip_val=config["training"]["gradient_clip_val"],
         accumulate_grad_batches=config["training"]["accumulate_grad_batches"],
         log_every_n_steps=config["training"]["log_every_n_steps"],
+        precision="16-mixed",
     )
 
     trainer.ema_callback = callbacks_dict.get("ema_callback", None)

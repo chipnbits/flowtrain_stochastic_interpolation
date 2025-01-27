@@ -9,7 +9,7 @@ from boreholes import make_boreholes_mask
 from geogen.dataset import GeoData3DStreamingDataset
 from geogen.model import GeoModel
 import geogen.plot as geovis
-from model_train_ema import (
+from model_train_ema_mixedpres_lowvram import (
     Geo3DStochInterp,
     get_config,
     setup_directories,
@@ -165,6 +165,34 @@ def run_inference(
 
     return solution
 
+def save_model_and_boreholes(model, boreholes, save_dir):
+    # Save the tensor data for the model and boreholes
+    os.makedirs(save_dir, exist_ok=True)
+    torch.save(model, os.path.join(save_dir, "true_model.pt"))
+    torch.save(boreholes, os.path.join(save_dir, "boreholes.pt"))
+    
+def save_solutions(solutions, save_dir):
+    # Save the tensor data for the solutions
+    os.makedirs(save_dir, exist_ok=True)
+    for i, sol in enumerate(solutions):
+        torch.save(sol, os.path.join(save_dir, f"sol_{i}.pt"))
+        
+def load_model_and_boreholes(save_dir):
+    # Load the tensor data for the model and boreholes
+    model = torch.load(os.path.join(save_dir, "true_model.pt"))
+    boreholes = torch.load(os.path.join(save_dir, "boreholes.pt"))
+    return model, boreholes
+
+def load_solutions(save_dir):
+    # index all files starting with "sol_" in the save_dir
+    sol_files = [f for f in os.listdir(save_dir) if f.startswith("sol_")]
+    solutions = [None] * len(sol_files)
+    for i, sol_file in enumerate(sol_files):
+        solutions[i] = torch.load(os.path.join(save_dir, sol_file))
+    
+    # Turn into one tensor wit batch dimension
+    return torch.stack(solutions)
+
 
 def load_model_with_ema_option(
     ckpt_path: str,
@@ -184,6 +212,20 @@ def load_model_with_ema_option(
 
     return model
 
+def load_run_display(run_num):
+    relative_sample_path = os.path.join(
+        "samples",
+        "15d-conditional-64x64x64-ema-mixedpres-lowvram",
+        f"run_{run_num}",)
+    
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
+    sample_path = os.path.join(script_dir, relative_sample_path)
+
+    model, boreholes = load_model_and_boreholes(sample_path)
+    solutions = load_solutions( sample_path)
+    
+    show_model_and_boreholes(model, boreholes)
+    show_solutions(solutions)
 
 def main() -> None:
     cfg = get_config()
@@ -197,7 +239,9 @@ def main() -> None:
     #     "topk-epoch=1371-train_loss=0.0245.ckpt",
     # )
     relative_checkpoint_path = os.path.join(
-        "saved_models", "18d-embeddings-conditional-16x16x16-ema", "last.ckpt"
+        "saved_models",
+        "15d-conditional-64x64x64-ema-mixedpres-lowvram",
+        "topk-epoch=469-train_loss=0.0050.ckpt",
     )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
@@ -213,10 +257,9 @@ def main() -> None:
         dirs,
         inference_device,
         model=model,
-        n_samples=9,
-        preview_boreholes=False,
+        n_samples=4,
     )
 
-
 if __name__ == "__main__":
-    main()
+    # main()
+    load_run_display(3)
