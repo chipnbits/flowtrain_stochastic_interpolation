@@ -71,3 +71,56 @@ def make_boreholes_mask(X: torch.Tensor) -> torch.Tensor:
         mask[b, 0, x_coords, y_coords, :] = True
 
     return mask
+
+def make_surface_mask(X: torch.Tensor) -> torch.Tensor:
+    """
+    Create a boolean mask to identify surface positions in a 3D volume, based on the Air indexing.
+
+    Steps for each batch item:
+      1) Set the topmost slice along the z-axis to True, marking it as the surface, to prevent skipping in case of no Air above. 
+      2) For any voxel with a value of -1 (Air), mark it and its immediately lower neighbor along the z-axis as part of the surface unless it is the bottommost slice.
+
+    Arguments:
+      X: A tensor of shape (B, C, size_x, size_y, size_z), where B is the batch size, C is the number of channels,
+         and size_x, size_y, size_z are the dimensions of the volume.
+
+    Returns:
+      mask: A boolean tensor of shape (B, 1, size_x, size_y, size_z), where True values indicate surface positions. Elsewhere False.
+    """
+
+    B, C, size_x, size_y, size_z = X.shape  
+
+    device = X.device
+
+    # Initialize the mask as False everywhere
+    mask = torch.zeros((B, 1, size_x, size_y, size_z), dtype=torch.bool, device=device)
+    
+    mask[:, 0, :, :, size_z-1] = True
+    for b in range(B):
+        positions = (X[b, 0] == -1).nonzero(as_tuple=True) 
+        if positions[0].numel() > 0: 
+            x_coords, y_coords, z_coords = positions
+            mask[b, 0, x_coords, y_coords, z_coords] = True
+            z_shifted = torch.clamp(z_coords - 1, min=0)
+            mask[b, 0, x_coords, y_coords, z_shifted] = True
+
+        #print(f"mask for {b}", mask[b, 0])
+    return mask
+
+
+def make_combined_mask(X: torch.Tensor) -> torch.Tensor:
+    """
+    Combines the borehole and surface masks into a single boolean mask.
+
+    Arguments:
+        X: a tensor of shape (B, C, size_x, size_y, size_z)
+
+    Returns:
+        combined_mask: a bool tensor of shape (B, 1, size_x, size_y, size_z)
+                       with True for both boreholes and surface features.
+    """
+    borehole_mask = make_boreholes_mask(X)
+    surface_mask = make_surface_mask(X)
+    combined_mask = borehole_mask | surface_mask
+
+    return combined_mask
