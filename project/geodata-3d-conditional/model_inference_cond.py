@@ -5,7 +5,7 @@ import math
 import pyvista as pv
 from pyvistaqt import BackgroundPlotter
 
-from boreholes import make_boreholes_mask
+from boreholes import make_boreholes_mask, make_combined_mask, make_surface_mask
 from geogen.dataset import GeoData3DStreamingDataset
 from geogen.model import GeoModel
 import geogen.plot as geovis

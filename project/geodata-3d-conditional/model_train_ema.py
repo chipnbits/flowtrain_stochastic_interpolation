@@ -27,7 +27,7 @@ from lightning.pytorch.core import LightningModule
 from lightning.pytorch.loggers import WandbLogger
 
 # Project-specific imports
-from boreholes import make_boreholes_mask
+from boreholes import make_boreholes_mask, make_combined_mask, make_surface_mask
 from callbacks import EMACallback, InferenceCallback
 from geogen.dataset import GeoData3DStreamingDataset
 from flowtrain.interpolation import LinearInterpolant, StochasticInterpolator
