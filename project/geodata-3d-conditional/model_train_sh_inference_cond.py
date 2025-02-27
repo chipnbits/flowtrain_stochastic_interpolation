@@ -1,7 +1,3 @@
-"""
-Train the velocity matching objective on an infinite 3D GeoData set.
-"""
-
 import os
 import platform
 import time
@@ -13,6 +9,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
+import json
+
+#from cpu_binding import affinity, num_threads
+#if affinity: # https://github.com/pytorch/pytorch/issues/99625
+#    os.sched_setaffinity(os.getpid(), affinity)
+#if num_threads > 0:
+#    torch.set_num_threads(num_threads)
+#    torch.set_num_interop_threads(num_threads)
+
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
@@ -24,10 +29,10 @@ from tqdm import tqdm
 from lightning import Trainer
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from lightning.pytorch.core import LightningModule
-from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.loggers import WandbLogger, CSVLogger
 
 # Project-specific imports
-from boreholes import make_boreholes_mask, make_combined_mask, make_surface_mask
+from boreholes import make_boreholes_mask, make_surface_mask, make_combined_mask
 from callbacks import EMACallback, InferenceCallback
 from geogen.dataset import GeoData3DStreamingDataset
 from flowtrain.interpolation import LinearInterpolant, StochasticInterpolator
@@ -40,36 +45,43 @@ from utils import (
     plot_static_views,
 )
 
+ROOT_DIR = "/scratch/okhmakv/SI"
+os.environ["WANDB_MODE"]="disabled"
+NUM_WORKERS = 16
+CPUS_PER_TASK = "auto" # 192
+NUM_NODES = int(os.environ['SLURM_NNODES'])
 
 def get_config() -> dict:
-    """
+    """cd
     Generates the entire configuration as a dictionary.
 
     Returns:
         dict: Configuration dictionary.
     """
-    devices = [0, 1, 2]  # List of GPU devices to use
-
     config = {
         "resume": True,
-        "devices": devices,
-        # Project configurations
+        #"devices": [0, 1, 2],  # This will be adjusted automatically below
+        "devices": None,  # This will be adjustecd sub  d automatically below
+        # Project configurationsvim 
         "project": {
-            "name": "15d-conditional-64x64x64-ema-mixedpres-lowvram",
-            "root_dir": os.path.dirname(os.path.abspath(__file__)),
+            "name": "15c_64_b8_ac4_lr1_3_64n_combined",
+            # "root_dir": os.path.dirname(os.path.abspath(__file__)),
+            "root_dir": ROOT_DIR, 
         },
         # Data loader configurations
         "data": {
-            "shape": (64, 64, 64),  # [C, X, Y, Z]
-            "bounds": (
+            "bounds": ( 
                 (-1920, 1920),
                 (-1920, 1920),
                 (-1920, 1920),
             ),
             "batch_size": 8,
-            "epoch_size": 10_000,
+            "epoch_size": 20_000,
+            "shape": (64, 64, 64),  # [C, X, Y, Z]
+            #"shape": (16, 16, 16),  # [C, X, Y, Z]
+            #"epoch_size": 32,
         },
-        # Categorical embedding parameters
+        # Categorical embedding parameterssque
         "embedding": {
             "num_categories": 15,
             "dim": 15,
@@ -100,17 +112,18 @@ def get_config() -> dict:
         # Training parameters
         "training": {
             "max_epochs": 3000,
-            "learning_rate": 5.0e-4,
+            "learning_rate": 1e-3,
             "lr_decay": 0.999,
-            "gradient_clip_val": 1e-2,
-            "accumulate_grad_batches": int(4 * 3 / len(devices)),
-            "log_every_n_steps": 16,
+            "gradient_clip_val": 3e-1,
+            #"gradient_clip_val": 1e-2,
+            "accumulate_grad_batches": 4,
+            "log_every_n_steps": 1,
             # --- EMA configuration ---
             "use_ema": True,
             "ema_decay": 0.9995,
             "ema_start_step": 0,
             "ema_update_every": 1,
-            "ema_update_on_cpu": False,
+            "ema_update_on_cpu": True,
         },
         # Inference parameters
         "inference": {
@@ -136,7 +149,6 @@ def get_config() -> dict:
 
     return config
 
-
 def setup_directories(config):
     root_dir = config["project"]["root_dir"]
     project_name = config["project"]["name"]
@@ -146,6 +158,7 @@ def setup_directories(config):
         "photo_dir": os.path.join(root_dir, "images", project_name),
         "emb_dir": os.path.join(root_dir, "embeddings", project_name),
         "samples_dir": os.path.join(root_dir, "samples", project_name),
+        "training_logs": os.path.join(root_dir, "training_logs", project_name)
     }
 
     for path in dirs.values():
@@ -183,14 +196,14 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
             monitor="epoch",
             mode="max",
         ),
-        "inference_callback": InferenceCallback(
-            save_dir=dirs["photo_dir"],
-            every_n_epochs=20,
-            n_samples=4,
-            n_steps=32,
-            tf=0.999,
-            seed=42,
-        ),
+        #"inference_callback": InferenceCallback(
+        #    save_dir=dirs["photo_dir"],
+        #   every_n_epochs=0, # DISABLED FOR NOW (SUPER SLOW ON CPU)
+        #   n_samples=4,
+        #   n_steps=32,
+        #   tf=0.999,
+        #   seed=42,
+        #),
     }
 
     if config["training"].get("use_ema", False):
@@ -223,7 +236,7 @@ def get_data_loader(config: dict, device: str = "cpu") -> DataLoader:
         dataset,
         batch_size=config["data"]["batch_size"],
         shuffle=True,
-        num_workers=16,
+        num_workers=NUM_WORKERS,
     )
     return dataloader
 
@@ -395,8 +408,9 @@ class Geo3DStochInterp(LightningModule):
         """
 
         # Draw encoded geogen model. Small noise is added to prevent singularities.
+        t0 = time.time()
         X1 = self.embed(batch)  # [B, E, X, Y, Z]
-        mask_boreholes = make_boreholes_mask(batch).expand(
+        mask_boreholes = make_combined_mask(batch).expand(
             -1, X1.shape[1], -1, -1, -1
         )  # [B, E, X, Y, Z]
         b = X1[mask_boreholes]  # [N_masked, E]
@@ -410,9 +424,11 @@ class Geo3DStochInterp(LightningModule):
             self.time_range[0], self.time_range[1]
         )  # [B,] (unifo)
 
-        # Compute objectives
+        # Compute objectivesu   
         XT, BT = self.interpolator.flow_objective(T, X0, X1)
+        t00 = time.time()
         BT_hat = self.net(XT, ATb, T)  # [B, E, X, Y, Z]
+        t11 = time.time()
 
         T_broadcasted = T.view(-1, 1, 1, 1, 1)  # Shape: [6, 1, 1, 1, 1]
         b_hat = (
@@ -420,16 +436,17 @@ class Geo3DStochInterp(LightningModule):
         )  # [B, E, X, Y, Z]
 
         # Compute losses
-        mse_loss = F.mse_loss(BT, BT_hat) / (F.mse_loss(BT, torch.zeros_like(BT)))
+        mse_loss = F.mse_loss(BT, BT_hat) / (F.mse_loss(BT, torch.zeros_like(BT))+1e-6)
         # Weight reconstruction loss by time
         weighted_reconstruct_loss = (
-            T_broadcasted.squeeze()
-            * F.mse_loss(b, b_hat)  # Multiply by T to unweight early times
-        ) / (F.mse_loss(X1, torch.zeros_like(X1)))
+            T_broadcasted.squeeze() * F.mse_loss(b, b_hat)  # Multiply by T
+        ) / (F.mse_loss(X1, torch.zeros_like(X1)) + 1e-6)
         weighted_reconstruct_loss = weighted_reconstruct_loss.mean()
-
+        
         # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
         loss = mse_loss + self.lambda_reconstruct * weighted_reconstruct_loss
+        t1 = time.time()
+        #print("LOSS TIME",loss,t1-t0,t11-t00,flush=True)
 
         # Log the training loss and orthogonality loss
         self.log_dict(
@@ -442,7 +459,7 @@ class Geo3DStochInterp(LightningModule):
             on_epoch=True,
             prog_bar=True,
             logger=True,
-            sync_dist=False,
+            sync_dist=True,
         )
 
         return loss
@@ -452,12 +469,32 @@ class Geo3DStochInterp(LightningModule):
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("lr", lr, on_epoch=True, logger=True)
 
+        print(f"Epoch {self.current_epoch}: Learning Rate = {lr}")
+        #print(f"Epoch {self.current_epoch}: Learning rate {lr} saved to {file_path}", flush=True)
+
+
+    def on_after_backward(self):
+        
+        """Logs gradient norms after the backward pass."""
+        total_norm = 0
+        for p in self.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.detach().data.norm(2)  # L2 norm of gradients
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5  # Compute final norm
+        self.log("grad_norm", total_norm, on_step=True, sync_dist=True)
+        print(f"Gradient Norm: {total_norm:.6f}")
+        
+
+
     def configure_optimizers(self) -> Dict[str, Any]:
         """
-        Configure Adafactor optimizer and learning rate scheduler.
+        Configure optimizers and learning rate schedulers.
         """
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.learning_rate)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.999)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer, gamma=self.hparams.lr_decay
+        )
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
 
@@ -486,29 +523,40 @@ def launch_training(config, dirs) -> None:
         )
     else:
         model = Geo3DStochInterp.load_from_checkpoint(last_checkpoint)
+        print(f"Resuming training from checkpoint: {last_checkpoint}")
 
     # Configure Weights & Biases logger
     logger = WandbLogger(
-        project=config["project"]["name"], resume="allow", log_model=True
+        project=config["project"]["name"], resume="allow", log_model=True,
     )
+
+    csv_logger = CSVLogger(save_dir=dirs["training_logs"],)
     logger.log_hyperparams(config)
+
+    csv_logger.log_hyperparams(config)
 
     # Create callbacks
     callbacks_dict = create_callbacks(config, dirs)
     callbacks_list = list(callbacks_dict.values())
 
     # Initialize Trainer
+    #print(os.environ)
     trainer = Trainer(
         max_epochs=config["training"]["max_epochs"],
-        devices=config["devices"],
-        logger=logger,
+        # devices=config["devices"],
+        devices=CPUS_PER_TASK,
+        accelerator="cpu",
+        #strategy="ddp",
+        num_nodes=NUM_NODES,
         callbacks=callbacks_list,
+        logger=[logger, csv_logger],
         gradient_clip_val=config["training"]["gradient_clip_val"],
         accumulate_grad_batches=config["training"]["accumulate_grad_batches"],
         log_every_n_steps=config["training"]["log_every_n_steps"],
-        precision="16-mixed",
     )
 
+    print("trainer",NUM_NODES,trainer.global_rank,trainer.local_rank,trainer.node_rank)
+    #exit()
     trainer.ema_callback = callbacks_dict.get("ema_callback", None)
 
     # Test basic functionality before training begins
