@@ -267,7 +267,7 @@ def run_inference(
     n_steps = 150
     start = time.time()
     solution = solver.solve(
-        X0, t0=0.001, tf=1.001, n_steps=n_steps
+        X0, t0=0.001, tf=0.999, n_steps=n_steps
     )  # [T, B, C, X, Y, Z]
 
     print(f"Time taken for inference: {time.time() - start:.2f} seconds")
