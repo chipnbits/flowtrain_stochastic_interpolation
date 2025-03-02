@@ -124,3 +124,68 @@ def make_combined_mask(X: torch.Tensor) -> torch.Tensor:
     combined_mask = borehole_mask | surface_mask
 
     return combined_mask
+
+def make_combined_reduced_mask(X: torch.Tensor) -> torch.Tensor:
+    """
+    Combines the borehole and surface masks into a single boolean mask.
+
+    Arguments:
+        X: a tensor of shape (B, C, size_x, size_y, size_z)
+
+    Returns:
+        combined_mask: a bool tensor of shape (B, 1, size_x, size_y, size_z)
+                       with True for both boreholes and surface features.
+    """
+    B, C, size_x, size_y, size_z = X.shape  # Extract dimensions
+    device = X.device
+
+    # Initialize the mask as False everywhere
+    combined_mask = torch.zeros((B, 1, size_x, size_y, size_z), dtype=torch.bool, device=device)
+
+    for b in range(B):
+        
+        surface_positions = (X[b, 0] == -1).nonzero(as_tuple=True)  # Find where surface starts as indicated by -1 in the data
+        if surface_positions[0].numel() > 0:
+            x_coords, y_coords, z_coords = surface_positions
+            combined_mask [b, 0, x_coords, y_coords, z_coords] = True
+            z_shifted = torch.clamp(z_coords - 1, min=0)
+            combined_mask [b, 0, x_coords, y_coords, z_shifted] = True
+
+        n_bores = torch.randint(8, 64, (1,), device=device).item() 
+        coords_2d = _jittered_grid_points(size_x, size_y, n_bores, device=device)
+
+        # Apply boreholes to the mask
+        for x, y in coords_2d:
+            if x in x_coords and y in y_coords:
+                min_z_index = z_coords[(x_coords == x) & (y_coords == y)].min()
+                z_start = max(min_z_index - 16, 0)  
+                combined_mask[b, 0, x, y, z_start:] = True
+
+    return combined_mask
+
+def make_boreholes_reduced_mask(X: torch.Tensor) -> torch.Tensor:
+
+    B, C, size_x, size_y, size_z = X.shape  # Extract dimensions
+    device = X.device
+
+    mask = torch.zeros((B, 1, size_x, size_y, size_z), dtype=torch.bool, device=device)
+
+    for b in range(B):
+
+        surface_positions = (X[b, 0] == -1).nonzero(as_tuple=True) 
+        if surface_positions[0].numel() > 0:
+            x_coords, y_coords, z_coords = surface_positions
+            mask [b, 0, x_coords, y_coords, z_coords] = True
+           
+
+        n_bores = torch.randint(8, 64, (1,), device=device).item()  
+        coords_2d = _jittered_grid_points(size_x, size_y, n_bores, device=device)
+
+        for x, y in coords_2d:
+            if x in x_coords and y in y_coords:
+                min_z_index = z_coords[(x_coords == x) & (y_coords == y)].min()
+                z_start = max(min_z_index - 16, 0)  
+                mask[b, 0, x, y, z_start:] = True
+
+    return mask
+        
