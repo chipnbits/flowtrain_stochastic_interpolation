@@ -506,7 +506,7 @@ def launch_training(config, dirs) -> None:
         gradient_clip_val=config["training"]["gradient_clip_val"],
         accumulate_grad_batches=config["training"]["accumulate_grad_batches"],
         log_every_n_steps=config["training"]["log_every_n_steps"],
-        precision="16-mixed",
+        # precision="16-mixed",
     )
 
     trainer.ema_callback = callbacks_dict.get("ema_callback", None)
