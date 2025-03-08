@@ -129,7 +129,7 @@ def create_cond_data(
         )
 
         synthetic_model = dataset[0].unsqueeze(0)  # [1, 1, X, Y, Z]
-        boreholes_mask = make_boreholes_mask(synthetic_model)  # [1, 1, X, Y, Z]
+        boreholes_mask = make_combined_mask(synthetic_model)  # [1, 1, X, Y, Z]
         boreholes = synthetic_model.clone()
         boreholes[~boreholes_mask] = -1  # delete rock around boreholes
 
@@ -164,98 +164,32 @@ def run_inference(
         torch.Generator(device="cpu").manual_seed(inference_seed)
         if inference_seed
         else None
-    )
-
-    X0 = torch.randn(
-        n_samples,
-        model.embedding_dim,
-        *data_shape,
-        generator=generator,
-    ).to(device)
-
-    assert (
-        ATb.shape[-4:] == X0.shape[-4:]
-    ), "ATb must match generative data in the last 4 dimensions (c, x, y, z)"
-
-    if ATb is None:
-        ATb = torch.zeros_like(X0)
-    else:
-        ATb = ATb.to(device)
-        # expand the batch dim to n_samples
-        ATb = ATb.expand(n_samples, -1, -1, -1, -1)
-
-    # Run the inference
-    n_steps = 16
-    start = time.time()
-    solution = solver.solve(
-        X0, t0=0.0001, tf=0.9999, n_steps=n_steps
-    )  # [T, B, C, X, Y, Z]
-
-    print(f"Time taken for inference: {time.time() - start:.2f} seconds")
-
-    return solution
-
-def run_inference_extended(
-    device,
-    model: Geo3DStochInterp = None,
-    ATb=None,
-    data_shape=None,
-    n_samples=10,
-    inference_seed=None,
-    save_imgs=True,
-) -> None:
-
-    model.to(device)
-    model.eval()
-
-    if data_shape is None:
-        data_shape = model.data_shape
-
-    # Wrapper function to add conditioning data to the x,t based ODE
-    def dxdt_cond(x, time, *args, **kwargs):
-        return model.net.forward(x, ATb=ATb, time=time, *args, **kwargs)
-
-    solver = ODEFlowSolver(model=dxdt_cond, rtol=1e-6)
-
-    # Option for
-    generator = (
-        torch.Generator(device="cpu").manual_seed(inference_seed)
-        if inference_seed
-        else None
-    )
-
-    X0 = torch.randn(
-        n_samples,
-        model.embedding_dim,
-        *data_shape,
-        generator=generator,
-    ).to(device)
-
-    assert (
-        ATb.shape[-4:] == X0.shape[-4:]
-    ), "ATb must match generative data in the last 4 dimensions (c, x, y, z)"
-
-    if ATb is None:
-        ATb = torch.zeros_like(X0)
-    else:
-        ATb = ATb.to(device)
-        # expand the batch dim to n_samples
-        ATb = ATb.expand(n_samples, -1, -1, -1, -1)
-
-    # Run the inference
-    n_steps = 16
-    start = time.time()
-    solution = solver.solve(
-        X0, t0=0.0001, tf=0.9999, n_steps=n_steps
-    )  # [T, B, C, X, Y, Z]
+    )    
     
-    extended_solution = solution
-    EXTRA_CONVERGENCE_STEPS = 5
-    for i in range(1, EXTRA_CONVERGENCE_STEPS):
-        extended_solution = solver.solve(
-            extended_solution, t0=0.99, tf=0.9999, n_steps=2
-        )
+    X0 = torch.randn(
+        n_samples,
+        model.embedding_dim,
+        *data_shape,
+        generator=generator,
+    ).to(device)
 
+    assert (
+        ATb.shape[-4:] == X0.shape[-4:]
+    ), "ATb must match generative data in the last 4 dimensions (c, x, y, z)"
+
+    if ATb is None:
+        ATb = torch.zeros_like(X0)
+    else:
+        ATb = ATb.to(device)
+        # expand the batch dim to n_samples
+        ATb = ATb.expand(n_samples, -1, -1, -1, -1)
+
+    # Run the inference
+    n_steps = 16
+    start = time.time()
+    solution = solver.solve(
+        X0, t0=0.0001, tf=0.9999, n_steps=n_steps
+    )  # [T, B, C, X, Y, Z]    
     print(f"Time taken for inference: {time.time() - start:.2f} seconds")
 
     return solution
@@ -267,7 +201,9 @@ def populate_solutions(
     model: Geo3DStochInterp = None,
     inference_method= run_inference,
     n_samples_each=9,
-    sample_title="run",    
+    batch_size=16,
+    sample_title="run", 
+    make_extended_solutions=False,
 ):
     # Find all the folders with the cond_data_folder_title within save_dir
     cond_data_folders = [
@@ -277,27 +213,73 @@ def populate_solutions(
     for folder in cond_data_folders:
         folder_path = os.path.join(save_dir, folder)
         geomodel, boreholes = load_model_and_boreholes(folder_path)
-
+        
+        # Send to same device as model
+        geomodel = geomodel.to(device)
+        boreholes = boreholes.to(device)
+        # Reconstruct mask (air above, rocks below)
+        boreholes_mask = (boreholes != -1) | (geomodel == -1)
+        
         # Embed the ground truth model        
         X1 = model.embed(geomodel)
         ATb = X1.clone()
-        boreholes_mask = (boreholes != -1)
-        ATb[~boreholes_mask.expand(-1, X1.shape[1], -1, -1, -1)] = 0
-        inv_solutions = inference_method(
-            device,
-            model=model,
-            ATb=ATb,
-            data_shape=model.data_shape,
-            n_samples=n_samples_each,
-            inference_seed=42,
-        )
-        sol_tf = inv_solutions[-1]  # [B, C, X, Y, Z]
-        sol_decoded = (
-            model.decode(sol_tf).detach().cpu() - 1
-        )  # [B, 1, X, Y, Z] (bump back down to -1)
 
-        # show_solutions(sol_decoded)
-        save_solutions(sol_decoded, folder_path)
+        mask_boreholes = boreholes_mask.expand(-1, X1.shape[1], -1, -1, -1)
+        ATb = X1 * mask_boreholes 
+        
+        # Split into batches
+        n_batches = math.ceil(n_samples_each / batch_size)
+        
+        samples_remaining = n_samples_each
+        for i in range(n_batches):
+            n_samples = min(samples_remaining, batch_size)
+            samples_remaining -= n_samples
+            
+            inv_solutions = inference_method(
+                device,
+                model=model,
+                ATb=ATb,
+                data_shape=model.data_shape,
+                n_samples=n_samples,
+                inference_seed=42+i,
+            )
+            
+            sol_tf = inv_solutions[-1]  # [B, C, X, Y, Z]
+
+            sol_save = (
+                model.decode(sol_tf).detach().cpu() - 1
+            )  # [B, 1, X, Y, Z] (bump back down to -1)
+            save_solutions(sol_save, folder_path, sample_title, start_index=i*batch_size)
+            
+            if make_extended_solutions:
+                # Try exteneded integration for the solutions and save a version of them
+                EXTRA_CONVERGENCE_STEPS = 5
+                print(f"Running extended integration for {EXTRA_CONVERGENCE_STEPS} steps")
+                
+                for j in range(1, EXTRA_CONVERGENCE_STEPS):
+                    # Push solution through last 1% of flow again five times
+                    sol_extended = extend_solutions(model, sol_tf, ATb) # [B, C, X, Y, Z] -> [T, B, C, X, Y, Z]
+                    sol_tf = sol_extended[-1]  # [T, B, C, X, Y, Z] -> [B, C, X, Y, Z]
+                    sol_decoded = sol_tf.detach().cpu() - 1
+                    save_solutions(sol_decoded, folder_path, f"{sample_title}_extended_{j}steps", start_index=i*batch_size)
+        
+def extend_solutions(model, initial_solutions, ATb):
+    """
+    Extend the solutions by n_steps.
+    """
+    ATb_expanded = ATb.expand(initial_solutions.shape[0], -1, -1, -1, -1) # Same batch size
+
+    # Wrapper function to add conditioning data to the x,t based ODE
+    def dxdt_cond(x, time, *args, **kwargs):
+        return model.net.forward(x, ATb=ATb_expanded, time=time, *args, **kwargs)
+
+    solver = ODEFlowSolver(model=dxdt_cond, rtol=1e-8)
+    
+    extended_solutions = solver.solve(
+        initial_solutions, t0=0.99, tf=0.9999, n_steps=8
+    )
+
+    return extended_solutions
 
 
 def show_solutions(solutions):
@@ -338,11 +320,11 @@ def save_model_and_boreholes(model, boreholes, save_dir):
     torch.save(boreholes, os.path.join(save_dir, "boreholes.pt"))
 
 
-def save_solutions(solutions, save_dir):
-    # Save the tensor data for the solutions
+def save_solutions(solutions, save_dir, sample_title = "sol", start_index = 0):
+    # Save the tensor data for the solutions    
     os.makedirs(save_dir, exist_ok=True)
     for i, sol in enumerate(solutions):
-        torch.save(sol, os.path.join(save_dir, f"sol_{i}.pt"))
+        torch.save(sol, os.path.join(save_dir, f"{sample_title}_{i+start_index}.pt"))
 
 
 def load_model_and_boreholes(save_dir):
@@ -398,13 +380,111 @@ def load_run_display(run_num):
     show_model_and_boreholes(model, boreholes)
     show_solutions(solutions)
 
+def ensemble_analysis():
+    cfg = get_config()
+    dirs = setup_directories(cfg)
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
+    samples_dir = dirs["samples_dir"]
+    samples_dir = os.path.join(samples_dir, "ensemble_method_18")
+
+    sols_decoded = load_solutions(
+        samples_dir, start_flag="sample_"
+    )  # [B, 1, 64, 64, 64]
+
+    # model_params = {
+    #     "dim": 8,  # Base number of hidden channels in model
+    #     "dim_mults": (
+    #         1,
+    #         2,
+    #     ),  # Multipliers for hidden dims in each superblock, total 2x downsamples = len(dim_mults)-1
+    #     "data_channels": 1,  # Data clamped down to fit categorical count
+    #     "dropout": 0.1,  # Optional network dropout
+    #     "self_condition": False,  # Optional conditioning on input data
+    #     "time_sin_pos": False,  # Use fixed sin/cos positional embeddings for time
+    #     "time_resolution": 1024,  # Resolution of time (number of random Fourier features)
+    #     "time_bandwidth": 1000.0,  # Starting bandwidth of fourier frequencies, f ~ N(0, time_bandwidth)
+    #     "time_learned_emb": True,  # Learnable fourier freqs and phases
+    #     "attn_enabled": True,  # Enable or disable self attention before each (down/up sample) also feeds skip connections
+    #     "attn_dim_head": 32,  # Size of attention hidden dimension heads
+    #     "attn_heads": 4,  # Number of chunks to split hidden dimension into for attention
+    #     "full_attn": None,  # defaults to full attention only for inner most layer final down, middle, first up
+    #     "flash_attn": False,  # For high performance GPUs https://github.com/Dao-AILab/flash-attention
+    # }
+
+    # decoder = Geo3DStochInterp(
+    #     data_shape=(16, 16, 16), num_categories=15, embedding_dim=15, **model_params
+    # )
+    # sols_decoded = decoder.decode(sols).detach().cpu() - 1  # [B, 1, 64, 64, 64]
+
+    model, boreholes = load_model_and_boreholes(samples_dir)
+    show_model_and_boreholes(model, boreholes)
+    show_solutions(sols_decoded)
+
+    num_categories = 15
+    sols_one_hot = (
+        torch.nn.functional.one_hot(sols_decoded + 1, num_categories)
+        .permute(0, 4, 1, 2, 3)
+        .float()
+    )  # [B, 15, 64, 64, 64]
+    probability_vector = sols_one_hot.mean(dim=0, keepdim=True)  # [1, 15, 64, 64, 64]
+
+    eps = 1e-8
+    entropy = -torch.sum(
+        probability_vector * torch.log(probability_vector + eps), dim=1
+    )  # [1, 64, 64, 64]
+    entropy = entropy.squeeze(0)  # Remove batch dim -> [64, 64, 64]
+
+    most_probable = torch.argmax(probability_vector, dim=1)  # [1, 64, 64, 64]
+    most_probable = most_probable.squeeze(0) - 1  # Remove batch dim -> [64, 64, 64]
+
+    # Clip out the air pixels
+    entropy_masked = entropy.clone()
+    entropy_masked[most_probable == -1] = -1
+
+    p = pv.Plotter(shape=(1, 3))
+
+    # Wrap most probable in GeoModel and plot
+    p.subplot(0, 0)
+    mp = GeoModel.from_tensor(most_probable)
+    p = geovis.nsliceview(model=mp, plotter=p)
+
+    p.subplot(0, 1)
+    p = geovis.volview(model=mp, plotter=p)
+
+    # Set to second pane
+    p.subplot(0, 2)
+    p = geovis.plot_array(data=entropy_masked, plotter=p)
+    p.link_views()
+    p.show()
+
+    # Expand solutions out using 1 hot along c
+    print("")
+
+def inspect_models():
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
+    save_dir = os.path.join(script_dir, "samples", "kaust-training")
+    cond_data_folder_title = "ensemble_method"
+    cond_data_folders = [
+        f for f in os.listdir(save_dir) if f.startswith(cond_data_folder_title)
+    ]
+    print(cond_data_folders)
+
+    for folder in cond_data_folders:
+        folder_path = os.path.join(save_dir, folder)
+        geomodel, boreholes = load_model_and_boreholes(folder_path)
+        show_model_and_boreholes(geomodel, boreholes)
+
+        # Wait for user input to continue, press any key to continue
+        print(f"Showing model and boreholes for {folder}")
+        input("Press Enter to continue...")
 
 def main() -> None:
     cfg = get_config()
     dirs = setup_directories(cfg)
 
     use_ema = True  # or False
-    inference_device = "cuda"
+    inference_device = "cuda:1"
     relative_checkpoint_path = os.path.join(
         "saved_models",
         "kaust-training",
@@ -420,7 +500,7 @@ def main() -> None:
         use_ema=use_ema,
     ).to(inference_device)
 
-    cond_data_folder_title="normal_vs_extended_flow"
+    cond_data_folder_title="normal_vs_extended"
 
     # # Create the conditioning data
     # num_folders = 10
@@ -439,8 +519,10 @@ def main() -> None:
         model=model,
         inference_method=run_inference,
         n_samples_each=9,
-        sample_title="normalflow",
+        sample_title="sample",
+        make_extended_solutions=True,
     )
+    
 
 
 if __name__ == "__main__":
