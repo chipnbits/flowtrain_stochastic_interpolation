@@ -17,14 +17,19 @@ def load_model_and_boreholes(save_dir):
     return model, boreholes
 
 def load_solutions(save_dir):
-    # index all files starting with "sol_" in the save_dir
+    # Index all files starting with "sol_" in the save_dir and sort them
     sol_files = [f for f in os.listdir(save_dir) if f.startswith("sol_")]
-    solutions = [None] * len(sol_files)
-    for i, sol_file in enumerate(sol_files):
-        solutions[i] = torch.load(os.path.join(save_dir, sol_file),  map_location=torch.device("cpu"))
+    sol_files.sort()  # Sort files alphabetically by name
 
-    # Turn into one tensor wit batch dimension
+    solutions = []
+    for sol_file in sol_files:
+        # Load the file and append it to the solutions list
+        solution = torch.load(os.path.join(save_dir, sol_file), map_location=torch.device("cpu"))
+        solutions.append(solution)
+
+    # Combine all solution tensors into one tensor with a new batch dimension
     return torch.stack(solutions)
+
 
 def load_run_display(file_path, run_num):
     relative_sample_path = os.path.join(
