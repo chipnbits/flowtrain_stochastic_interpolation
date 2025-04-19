@@ -63,7 +63,7 @@ def make_boreholes_mask(X: torch.Tensor) -> torch.Tensor:
     mask = torch.zeros((B, 1, size_x, size_y, size_z), dtype=torch.bool, device=device)
 
     for b in range(B):
-        n_bores = torch.randint(8, 128, (1,), device=device).item()
+        n_bores = torch.randint(8, 32, (1,), device=device).item()
         coords_2d = _jittered_grid_points(size_x, size_y, n_bores, device=device)
 
         x_coords = coords_2d[:, 0]
