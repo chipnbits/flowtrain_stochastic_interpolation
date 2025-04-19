@@ -7,6 +7,7 @@ import platform
 import time
 import warnings
 from typing import Any, Dict, List, Tuple, Optional
+from functools import partial
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,10 +27,11 @@ from lightning.pytorch.core import LightningModule
 from lightning.pytorch.loggers import WandbLogger
 
 # Project-specific imports
+from boreholes import make_boreholes_mask, make_combined_mask, make_surface_mask
 from callbacks import EMACallback, InferenceCallback
 from geogen.dataset import GeoData3DStreamingDataset
 from flowtrain.interpolation import LinearInterpolant, StochasticInterpolator
-from flowtrain.models import Unet3D
+from flowtrain.models import Unet3DCondV3 as Unet3D
 from flowtrain.solvers import ODEFlowSolver
 
 from utils import (
@@ -46,12 +48,14 @@ def get_config() -> dict:
     Returns:
         dict: Configuration dictionary.
     """
+    devices = [0, 1, 2]  # List of GPU devices to use
+
     config = {
         "resume": True,
-        "devices": [1, 2],  # This will be adjusted automatically below
+        "devices": devices,
         # Project configurations
         "project": {
-            "name": "cat-embeddings-18d-normed-64cubed",
+            "name": "15d-conditional-64x64x64-ema-mixedpres-lowvram",
             "root_dir": os.path.dirname(os.path.abspath(__file__)),
         },
         # Data loader configurations
@@ -62,20 +66,20 @@ def get_config() -> dict:
                 (-1920, 1920),
                 (-1920, 1920),
             ),
-            "batch_size": 6,
+            "batch_size": 8,
             "epoch_size": 10_000,
         },
         # Categorical embedding parameters
         "embedding": {
             "num_categories": 15,
-            "dim": 18,
+            "dim": 15,
         },
         # Model parameters
         "model": {
             "dim": 48,  # Base number of hidden channels in model
             "dim_mults": (
                 1,
-                1,
+                2,
                 2,
                 3,
                 4,
@@ -95,13 +99,18 @@ def get_config() -> dict:
         },
         # Training parameters
         "training": {
-            "lambda_angle": 10,
-            "max_epochs": 2000,
-            "learning_rate": 2.0e-4,
-            "lr_decay": 0.997,
-            "gradient_clip_val": 1.0,
-            "accumulate_grad_batches": 24,
-            "log_every_n_steps": 5,
+            "max_epochs": 3000,
+            "learning_rate": 5.0e-4,
+            "lr_decay": 0.999,
+            "gradient_clip_val": 1e-2,
+            "accumulate_grad_batches": int(4 * 3 / len(devices)),
+            "log_every_n_steps": 16,
+            # --- EMA configuration ---
+            "use_ema": True,
+            "ema_decay": 0.9995,
+            "ema_start_step": 0,
+            "ema_update_every": 1,
+            "ema_update_on_cpu": False,
         },
         # Inference parameters
         "inference": {
@@ -162,7 +171,7 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
         "top_k_checkpoint": ModelCheckpoint(
             dirpath=dirs["checkpoint_dir"],
             filename="topk-{epoch:02d}-{train_loss:.4f}",
-            save_top_k=1,
+            save_top_k=3,
             verbose=True,
             monitor="train_loss",
             mode="min",
@@ -176,7 +185,7 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
         ),
         "inference_callback": InferenceCallback(
             save_dir=dirs["photo_dir"],
-            every_n_epochs=5,
+            every_n_epochs=20,
             n_samples=4,
             n_steps=32,
             tf=0.999,
@@ -184,10 +193,19 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
         ),
     }
 
+    if config["training"].get("use_ema", False):
+        ema_cb = EMACallback(
+            decay=config["training"]["ema_decay"],
+            start_step=config["training"]["ema_start_step"],
+            update_every=config["training"]["ema_update_every"],
+            update_on_cpu=config["training"]["ema_update_on_cpu"],
+        )
+        callbacks["ema_callback"] = ema_cb
+
     return callbacks
 
 
-def get_data_loader(config: dict, device: str) -> DataLoader:
+def get_data_loader(config: dict, device: str = "cpu") -> DataLoader:
     """
     Initialize the data loader for training.
 
@@ -199,7 +217,7 @@ def get_data_loader(config: dict, device: str) -> DataLoader:
         model_resolution=config["data"]["shape"],  # [C, X, Y, Z]
         model_bounds=config["data"]["bounds"],
         dataset_size=config["data"]["epoch_size"],
-        device="cpu",
+        device=device,
     )
     dataloader = DataLoader(
         dataset,
@@ -224,8 +242,6 @@ class Geo3DStochInterp(LightningModule):
         Number of categorical classes.
     embedding_dim : int
         Dimension of the embedding vectors for categories, GeoGen has 15 categories to embed
-    lambda_angle : float
-        Weight for the angle (cosine similarity) loss if using learnable normalized embeddings.
     model_params : dict
         Parameters for the flow match ML model that predicts the stochastic interpolation objective.
 
@@ -244,22 +260,24 @@ class Geo3DStochInterp(LightningModule):
     def __init__(
         self,
         data_shape: Tuple[int, int, int] = (32, 32, 32),
-        time_range: List[float] = [0.0005, 0.9995],
+        time_range: List[float] = [0.0001, 0.9999],
         num_categories: int = 15,
         embedding_dim: int = 20,
-        lambda_angle: float = 0.1,
-        learning_rate: float = 2.0e-4,  # Left here due to saved model compatibility
+        lambda_reconstruct: float = 1.0,
+        learning_rate: float = 2e-3,
         lr_decay: float = 0.997,
         **model_params: Any,
     ):
         super().__init__()
         self.save_hyperparameters()
+        self.learning_rate = learning_rate
+        self.lr_decay = lr_decay
 
         self.data_shape = data_shape
         self.time_range = time_range
         self.num_categories = num_categories
         self.embedding_dim = embedding_dim
-        self.lambda_angle = lambda_angle
+        self.lambda_reconstruct = lambda_reconstruct
 
         # Embedding layer setup
         self.embedding = nn.Embedding(self.num_categories, self.embedding_dim)
@@ -313,7 +331,9 @@ class Geo3DStochInterp(LightningModule):
         The E dimension holds the vector representation of the category.
         """
 
-        indices = x.squeeze(1).long() + 1  # Adjust indices if needed
+        indices = (
+            x.squeeze(1).long() + 1
+        )  # Adjust indices if needed (air starts as -1 so bump up by 1)
         embedded = self.embedding(indices)  # [B, X, Y, Z, E]
         embedded = embedded.permute(0, 4, 1, 2, 3).contiguous()  # [B, E, X, Y, Z]
         return embedded
@@ -373,15 +393,15 @@ class Geo3DStochInterp(LightningModule):
         Returns:
             torch.Tensor: Loss value.
         """
-        # Renormalize embeddings to unit ball, important for learnable embeddings and decoding metric used
-        with torch.no_grad():
-            self.embedding.weight.div_(
-                self.embedding.weight.norm(p=2, dim=1, keepdim=True)
-            )
 
         # Draw encoded geogen model. Small noise is added to prevent singularities.
         X1 = self.embed(batch)  # [B, E, X, Y, Z]
-        X1 = X1 + 1e-3 * torch.randn_like(X1)
+        mask_boreholes = make_boreholes_mask(batch).expand(
+            -1, X1.shape[1], -1, -1, -1
+        )  # [B, E, X, Y, Z]
+        b = X1[mask_boreholes]  # [N_masked, E]
+        ATb = X1 * mask_boreholes
+        X1 = X1 + 1e-4 * torch.randn_like(X1)
 
         X0 = torch.randn_like(X1)  # [B, E, X, Y, Z]
 
@@ -392,32 +412,31 @@ class Geo3DStochInterp(LightningModule):
 
         # Compute objectives
         XT, BT = self.interpolator.flow_objective(T, X0, X1)
-        BT_hat = self.net(XT, T)  # [B, E, X, Y, Z]
+        BT_hat = self.net(XT, ATb, T)  # [B, E, X, Y, Z]
+
+        T_broadcasted = T.view(-1, 1, 1, 1, 1)  # Shape: [6, 1, 1, 1, 1]
+        b_hat = (
+            XT[mask_boreholes] + ((1 - T_broadcasted) * BT_hat)[mask_boreholes]
+        )  # [B, E, X, Y, Z]
 
         # Compute losses
-        mse_loss = F.mse_loss(BT, BT_hat) / F.mse_loss(BT, torch.zeros_like(BT))
-
-        # Orthogonality loss on embeddings (metric if using learnable embeddings)
-        embed_norm = F.normalize(self.embedding.weight, dim=1)
-        gram_matrix = torch.matmul(embed_norm, embed_norm.t())
-        angle_loss = torch.sum(gram_matrix)  # optimal spread gives 0
+        mse_loss = F.mse_loss(BT, BT_hat) / (F.mse_loss(BT, torch.zeros_like(BT)))
+        # Weight reconstruction loss by time
+        weighted_reconstruct_loss = (
+            T_broadcasted.squeeze()
+            * F.mse_loss(b, b_hat)  # Multiply by T to unweight early times
+        ) / (F.mse_loss(X1, torch.zeros_like(X1)))
+        weighted_reconstruct_loss = weighted_reconstruct_loss.mean()
 
         # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
-        loss = mse_loss + self.lambda_angle * angle_loss
-
-        # Track the mean of the embedding vectors (useful for learnable embeddings)
-        mean_embedding = self.embedding.weight.mean(dim=0)  # Mean of embedding vectors
-        mean_embedding_norm = torch.norm(
-            mean_embedding
-        )  # Norm of the mean embedding vector
+        loss = mse_loss + self.lambda_reconstruct * weighted_reconstruct_loss
 
         # Log the training loss and orthogonality loss
         self.log_dict(
             {
                 "train_loss": loss,
                 "flow_loss": mse_loss,
-                "angle_loss": angle_loss,
-                "mean_embedding_norm": mean_embedding_norm,
+                "reconstruct_loss": weighted_reconstruct_loss,
             },
             on_step=True,
             on_epoch=True,
@@ -432,90 +451,17 @@ class Geo3DStochInterp(LightningModule):
         # Log the learning rate at the end of each epoch
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("lr", lr, on_epoch=True, logger=True)
-        # self._log_embedding_gram_matrix()
-
-    def _log_embedding_gram_matrix(self):
-        """
-        Helper to log a heatmap of the Gram matrix of the embedding vectors.
-        This computes the angle pariwise between all embedding vectors, useful
-        for tracking the spread of learnable embeddings.
-        """
-        # Generate the Gram matrix (self dot products) for embedding vectors
-        embed_vecs = self.embedding.weight
-        gram_matrix = (
-            torch.matmul(embed_vecs, embed_vecs.t()).detach().cpu().numpy()
-        )  # Convert to numpy
-        # Remove the diagonal elements for visualization
-        np.fill_diagonal(gram_matrix, 0)
-
-        # Create a heatmap plot with matplotlib/seaborn
-        plt.figure(figsize=(8, 6))
-        ax = sns.heatmap(gram_matrix, annot=False, cmap="coolwarm", cbar=True)
-        plt.title(f"Embedding Gram Matrix at Epoch {self.current_epoch}")
-
-        # Define groupings for the boxes and corresponding labels
-        groupings = [[0], [1], [2, 3, 4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14]]
-        labels = ["Air", "Basement", "Sediment", "Dike", "Intrusion", "Blob"]
-
-        for group, label in zip(groupings, labels):
-            # Draw a rectangle around each group
-            start = group[0]
-            end = group[-1]
-            rect = patches.Rectangle(
-                (start, start),
-                end - start + 1,
-                end - start + 1,
-                fill=False,
-                edgecolor="teal",
-                linewidth=2,
-                linestyle="--",
-            )
-            ax.add_patch(rect)
-
-            # Add a label in the center of each box
-            center_x = (start + end + 1) / 2
-            center_y = (start + end + 1) / 2
-            ax.text(
-                center_x,
-                center_y,
-                label,
-                color="black",
-                ha="center",
-                va="center",
-                fontsize=10,
-                fontweight="bold",
-                alpha=0.7,
-            )
-
-        # Log the plot directly to Wandb via the logger
-        self.logger.experiment.log({"embedding_gram_matrix": wandb.Image(plt)})
-
-        # Close the plot to free memory
-        plt.close()
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """
-        Configure optimizers and learning rate schedulers.
+        Configure Adafactor optimizer and learning rate scheduler.
         """
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            optimizer, gamma=self.hparams.lr_decay
-        )
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.learning_rate)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.999)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
-    def on_save_checkpoint(self, checkpoint):
 
-        checkpoint["ema_shadow"] = (
-            self.ema_shadow
-        )  # Save the EMA weights to the checkpoint
-
-    def on_load_checkpoint(self, checkpoint):
-        self.ema_shadow = checkpoint[
-            "ema_shadow"
-        ]  # Load the EMA weights from the checkpoint
-
-
-def launch_training(config, dirs, device: str) -> None:
+def launch_training(config, dirs) -> None:
     """
     Initialize and launch the training process.
 
@@ -524,26 +470,22 @@ def launch_training(config, dirs, device: str) -> None:
         dirs (Dict[str, str]): Paths to necessary directories.
         device (str): Device to train on.
     """
-    data_loader = get_data_loader(config, device=device)
-
-    # Initialize the model
+    data_loader = get_data_loader(config)
     last_checkpoint = (
         find_latest_checkpoint(dirs["checkpoint_dir"]) if config["resume"] else None
     )
-    if config["resume"] and last_checkpoint:
-        model = Geo3DStochInterp.load_from_checkpoint(last_checkpoint)
-        print(f"Resuming training from checkpoint: {last_checkpoint}")
-    else:
+
+    if last_checkpoint is None:
         model = Geo3DStochInterp(
             data_shape=config["data"]["shape"],
             num_categories=config["embedding"]["num_categories"],
             embedding_dim=config["embedding"]["dim"],
-            lambda_angle=config["training"]["lambda_angle"],
             learning_rate=config["training"]["learning_rate"],
             lr_decay=config["training"]["lr_decay"],
             **config["model"],
         )
-        last_checkpoint = None
+    else:
+        model = Geo3DStochInterp.load_from_checkpoint(last_checkpoint)
 
     # Configure Weights & Biases logger
     logger = WandbLogger(
@@ -552,27 +494,29 @@ def launch_training(config, dirs, device: str) -> None:
     logger.log_hyperparams(config)
 
     # Create callbacks
-    callbacks = create_callbacks(config, dirs)
-    callbacks_as_list = list(callbacks.values())
+    callbacks_dict = create_callbacks(config, dirs)
+    callbacks_list = list(callbacks_dict.values())
 
     # Initialize Trainer
     trainer = Trainer(
         max_epochs=config["training"]["max_epochs"],
         devices=config["devices"],
         logger=logger,
-        callbacks=callbacks_as_list,
+        callbacks=callbacks_list,
         gradient_clip_val=config["training"]["gradient_clip_val"],
         accumulate_grad_batches=config["training"]["accumulate_grad_batches"],
         log_every_n_steps=config["training"]["log_every_n_steps"],
+        # precision="16-mixed",
     )
 
-    # Test basic functionality before training begins
-    test_inspect_data(data_loader)
-    inference_callback = callbacks["inference_callback"]
-    inference_callback.run_manual_inference(trainer, model)
+    trainer.ema_callback = callbacks_dict.get("ema_callback", None)
 
-    # Start training
-    trainer.fit(model, data_loader, ckpt_path=last_checkpoint)
+    # Test basic functionality before training begins
+    # inference_callback: InferenceCallback = callbacks["inference_callback"]
+    # inference_callback.run_manual_inference(trainer, model)
+
+    # Restore case with None for model will load all callbacks (EMA etc)
+    trainer.fit(model=model, train_dataloaders=data_loader, ckpt_path=last_checkpoint)
 
 
 def load_model(
@@ -602,136 +546,6 @@ def load_model(
     return model
 
 
-def run_inference(
-    dirs,
-    device,
-    model=None,
-    n_samples=1,
-    batch_size=4,
-    inference_seed=None,
-    data_shape=None,
-    save_imgs=True,
-) -> None:
-    """
-    Run inference to generate samples using the trained model.
-
-    Args:
-        config (dict): Configuration dictionary.
-        dirs (Dict[str, str]): Paths to necessary directories.
-        device (str): Device to run inference on.
-    """
-
-    checkpoint_dir = dirs["checkpoint_dir"]
-    samples_dir = dirs["samples_dir"]
-    os.makedirs(samples_dir, exist_ok=True)
-
-    if model == None:
-        # Load model from checkpoint
-        last_checkpoint = find_latest_checkpoint(checkpoint_dir)
-        if not last_checkpoint:
-            raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}")
-        model = Geo3DStochInterp.load_from_checkpoint(last_checkpoint)
-
-    model.to(device)
-    model.eval()
-
-    if data_shape is None:
-        data_shape = model.data_shape
-
-    # Apply EMA weights if available
-    if hasattr(model, "ema_callback"):
-        model.ema_callback.apply_ema_weights(model)
-
-    solver = ODEFlowSolver(model=model.net, rtol=1e-6)
-
-    t0, tf = 0.001, 0.999
-    n_steps = 32
-
-    # Enable off-screen rendering if using PyVista or similar
-    # pv.OFF_SCREEN = True  # Uncomment if using PyVista
-
-    num_batches = (n_samples - 1) // batch_size + 1
-    generator = (
-        torch.Generator(device="cpu").manual_seed(inference_seed)
-        if inference_seed
-        else None
-    )
-
-    total_start = time.time()
-
-    with tqdm(total=num_batches, desc="Generating Batches") as pbar:
-        for batch_idx in range(num_batches):
-            current_batch_size = min(batch_size, n_samples - batch_idx * batch_size)
-            if generator:
-                X0 = torch.randn(
-                    current_batch_size,
-                    model.embedding_dim,
-                    *data_shape,
-                    generator=generator,
-                ).to(device)
-            else:
-                X0 = torch.randn(
-                    current_batch_size,
-                    model.embedding_dim,
-                    *data_shape,
-                ).to(device)
-
-            # Solve ODEFlow
-            start = time.time()
-            solution = solver.solve(
-                X0, t0=t0, tf=tf, n_steps=n_steps
-            )  # [T, B, C, X, Y, Z]
-            inference_time = time.time() - start
-            print(
-                f"Batch {batch_idx + 1}/{num_batches}: ODEFlow solved in {inference_time:.2f} seconds"
-            )
-
-            # Decode solution at final time step
-            final_solution = solution[-1]  # [B, C, X, Y, Z]
-            decoded = model.decode(final_solution)  # [B, X, Y, Z]
-
-            for i in range(current_batch_size):
-                sample_idx = batch_idx * batch_size + i
-                sample_tensor = final_solution[i].detach().cpu()  # [C, X, Y, Z]
-                tensor_path = os.path.join(samples_dir, f"sample_{sample_idx}.pt")
-                torch.save(sample_tensor, tensor_path)
-                print(f"Saved tensor to {tensor_path}")
-
-                if save_imgs:
-                    # Save static view
-                    try:
-                        static_plot_path = os.path.join(
-                            samples_dir, f"static_view_{sample_idx}.png"
-                        )
-                        plot_static_views(sample_tensor, save_path=static_plot_path)
-                        print(f"Saved static view to {static_plot_path}")
-                    except Exception as e:
-                        warnings.warn(
-                            f"Failed to save static view for sample {sample_idx}: {e}"
-                        )
-
-                    # Save categorical view
-                    try:
-                        cat_plot_path = os.path.join(
-                            samples_dir, f"cat_view_{sample_idx}.png"
-                        )
-                        plot_cat_view(
-                            decoded[i].detach().cpu(), save_path=cat_plot_path
-                        )
-                        print(f"Saved categorical view to {cat_plot_path}")
-                    except Exception as e:
-                        warnings.warn(
-                            f"Failed to save categorical view for sample {sample_idx}: {e}"
-                        )
-
-            pbar.update(1)
-
-    total_time = time.time() - total_start
-    print(
-        f"Inference completed: Generated {n_samples} samples in {total_time:.2f} seconds."
-    )
-
-
 def test_inspect_data(data_loader: DataLoader) -> None:
     """
     Inspect samples from the data loader.
@@ -751,38 +565,7 @@ def main() -> None:
     config = get_config()
     dirs = setup_directories(config)
 
-    device = config["devices"]
-
-    run_training = False
-    run_inference_flag = True
-
-    if run_training:
-        launch_training(config, dirs, device)
-
-    if run_inference_flag:
-
-        inference_device = "cuda:2"
-
-        relative_checkpoint_path = os.path.join(
-            "demo_model", "trained-model.ckpt"
-        )
-
-        script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
-        checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
-
-        model = Geo3DStochInterp.load_from_checkpoint(checkpoint_path, map_location=inference_device).to(
-            inference_device
-        )
-
-        run_inference(
-            dirs,
-            inference_device,
-            model=model,
-            n_samples=4,
-            batch_size=4,
-            data_shape=(64, 64, 64),
-            save_imgs=False,
-        )
+    launch_training(config, dirs)
 
 
 if __name__ == "__main__":

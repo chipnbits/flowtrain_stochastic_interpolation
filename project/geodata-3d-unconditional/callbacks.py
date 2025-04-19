@@ -1,5 +1,5 @@
 import os
-import time as clock
+import time as time
 
 import torch
 import utils
@@ -69,9 +69,9 @@ class InferenceCallback(Callback):
         solver = ODEFlowSolver(model=net, rtol=1e-6)
         self.generator.manual_seed(self.seed)
         X0 = torch.randn(self.n_samples, pl_module.embedding_dim, *pl_module.data_shape, generator=self.generator).to(pl_module.device)
-        start = clock.time()
+        start = time.time()
         solution = solver.solve(X0, t0=self.t0, tf=self.tf, n_steps=self.n_steps)
-        stop = clock.time()
+        stop = time.time()
         sol_tf = solution[-1].detach()
         logits = pl_module.decode(sol_tf, return_logits=True).cpu()
         sol_tf = torch.argmax(logits, dim=1)
@@ -133,7 +133,7 @@ class InferenceCallback(Callback):
                         break  # Exit loop if successful
                     except OSError as e:
                         print(f"Retrying image {image_path} due to error: {e}")
-                        clock.sleep(0.5)  # Wait before retrying
+                        time.sleep(0.5)  # Wait before retrying
             except Exception as e:
                 print(f"Error logging image {image_path}: {e}")
                 
