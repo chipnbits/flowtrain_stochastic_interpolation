@@ -36,6 +36,7 @@ from utils import (
     find_latest_checkpoint,
     plot_cat_view,
     plot_static_views,
+    download_if_missing,
 )
 
 
@@ -774,9 +775,13 @@ def main() -> None:
         relative_checkpoint_path = os.path.join(
             "demo_model", "unconditional-weights.ckpt"
         )
-
+        
         script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
         checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
+        
+        weights_url = "https://https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt"
+        download_if_missing(checkpoint_path, weights_url)
+        
 
         model = Geo3DStochInterp.load_from_checkpoint(
             checkpoint_path, map_location=inference_device

@@ -1,4 +1,5 @@
 import os
+import urllib.request
 
 import einops
 import geogen.plot as geovis
@@ -19,6 +20,13 @@ def find_latest_checkpoint(checkpoint_dir):
         return None
     latest_checkpoint = max(checkpoint_files, key=os.path.getctime)
     return latest_checkpoint
+
+def download_if_missing(path, url):
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        print(f"Downloading weights from {url}...")
+        urllib.request.urlretrieve(url, path)
+        print("Download complete.")
 
 
 def plot_2d_slices(volume, save_path=None, max_slices=64):

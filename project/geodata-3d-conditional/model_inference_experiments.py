@@ -15,6 +15,7 @@ from model_train_ema_mixedpres_lowvram import (
     get_data_loader,
     ODEFlowSolver,
 )
+from utils import download_if_missing
 
 
 def get_config() -> dict:
@@ -456,8 +457,7 @@ def ensemble_analysis():
     p.show()
 
     # Expand solutions out using 1 hot
-    print("")
-
+    print("")   
 
 def main() -> None:
     cfg = get_config()
@@ -467,9 +467,13 @@ def main() -> None:
     use_ema = True  # Turn on the EMA model weights
     inference_device = "cuda"
     relative_checkpoint_path = os.path.join("demo_model", "conditional-weights.ckpt")
-
+    
     script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
     checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
+    
+    # Auto-download weights if missing
+    weights_url = "https://https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/conditional-weights.ckpt"
+    download_if_missing(checkpoint_path, weights_url)
 
     model = load_model_with_ema_option(
         ckpt_path=checkpoint_path,
