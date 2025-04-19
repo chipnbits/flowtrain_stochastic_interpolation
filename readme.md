@@ -9,13 +9,13 @@ To install the package in editable mode, navigate to the project root (where `se
 ```
 
 This package also installs a dependency for synthetic geological data generation:  
-[`GeoGen`](https://github.com/eldadHaber/StructuralGeo/releases/tag/v1.0), which will be installed automatically via `pip`.
+[`StructuralGeo`](https://github.com/eldadHaber/StructuralGeo/releases/tag/v1.0), which will be installed automatically via `pip`.
 
 ---
 
-## GeoGen Integration
+## StructuralGeo Integration
 
-The `project/` directory contains code and supporting files for training and evaluating flow-based models on 3D GeoGen data. These models are designed for stochastic interpolation using flow-matching techniques.
+The `project/` directory contains code and supporting files for training and evaluating flow-based models on 3D StructuralGeo data. These models are designed for stochastic interpolation using flow-matching techniques.
 
 The codebase is built on:
 
