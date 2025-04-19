@@ -693,14 +693,18 @@ def run_inference(
             for i in range(current_batch_size):
                 sample_idx = batch_idx * batch_size + i
                 sample_tensor = decoded[i].detach().cpu()  # [C, X, Y, Z]
-                tensor_path = os.path.join(samples_dir, f"decoded_s{inference_seed}_{sample_idx}.pt")
+                tensor_path = os.path.join(
+                    samples_dir, f"decoded_s{inference_seed}_{sample_idx}.pt"
+                )
                 torch.save(sample_tensor, tensor_path)
-                
+
                 # Save the nondecoded tensors with time steps as well
                 sample_tensor = solution[:, i].detach().cpu()  # [T, C, X, Y, Z]
-                tensor_path = os.path.join(samples_dir, f"fullsol_s{inference_seed}_{sample_idx}.pt")
+                tensor_path = os.path.join(
+                    samples_dir, f"fullsol_s{inference_seed}_{sample_idx}.pt"
+                )
                 torch.save(sample_tensor, tensor_path)
-                
+
                 if save_imgs:
                     # Save static view
                     try:
@@ -765,25 +769,25 @@ def main() -> None:
 
     if run_inference_flag:
 
-        inference_device = "cuda:2"
+        inference_device = "cuda:0"
 
         relative_checkpoint_path = os.path.join(
-            "demo_model", "trained-model.ckpt"
+            "demo_model", "unconditional-weights.ckpt"
         )
 
         script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
         checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
 
-        model = Geo3DStochInterp.load_from_checkpoint(checkpoint_path, map_location=inference_device).to(
-            inference_device
-        )
+        model = Geo3DStochInterp.load_from_checkpoint(
+            checkpoint_path, map_location=inference_device
+        ).to(inference_device)
 
         run_inference(
             dirs,
             inference_device,
             model=model,
-            n_samples=500,
-            batch_size=4,
+            n_samples=8,
+            batch_size=1,
             data_shape=(64, 64, 64),
             inference_seed=100,
             save_imgs=False,

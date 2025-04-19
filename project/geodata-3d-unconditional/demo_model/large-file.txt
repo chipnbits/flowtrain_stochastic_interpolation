@@ -1,5 +1,0 @@
-The demo trained model can be downloaded and placed in this folder 
-
-
-Download from
-https://drive.google.com/file/d/1BJxvTbbqeNoPFai5Df2Xw5MpzFyttM2m/view?usp=sharing
