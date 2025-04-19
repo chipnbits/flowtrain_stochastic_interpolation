@@ -9,7 +9,6 @@ from geogen.model import GeoModel
 import geogen.plot as geovis
 
 
-
 def load_model_and_boreholes(save_dir):
     # Load the tensor data for the model and boreholes
     model = torch.load(os.path.join(save_dir, "true_model.pt"),  map_location=torch.device("cpu"))

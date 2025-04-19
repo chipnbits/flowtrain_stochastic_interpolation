@@ -18,7 +18,15 @@ Note that the code makes use of PyTorch, PyTorch Lightning, and Wandb but can be
 
 The overall structure is designed to allow for learned categorical embeddings, and preparation work for adding EMA and other techniques for better training stability.
 
-The demo trained model can be downloaded and placed in this folder 
+The best trained model for 64^3 unconditional data and 64^3 conditional data is available in the `demo_model` folder for each application under the project folder.
 
-The best trained model for 64^3 unconditional data is to be given in `demo_model` and is set to load in the `model_train_inference.py` script. Since the file is too large for GitHub, manually download it and place it in the folder:
-https://drive.google.com/file/d/1BJxvTbbqeNoPFai5Df2Xw5MpzFyttM2m/view?usp=sharing
+### Unconditional Training and Generation
+Model was trained using `model_train_inference.py` script. 
+The same script is setup to demonstrate inference using the `main()` function. 
+
+### Conditional Training and Generation
+Training was done with `model_train_sh_inference_cond.py` script.
+A demonstration of inference using the trained weights can be found in `model_inference_experiments.py` script.
+
+```bash
+
