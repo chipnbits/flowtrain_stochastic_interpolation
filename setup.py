@@ -17,5 +17,6 @@ setup(
       "einops",
       "matplotlib",
       "tqdm",
+      "GeoGen @ git+https://github.com/eldadHaber/StructuralGeo.git@v1.0"
   ],
 )
