@@ -496,7 +496,7 @@ def main() -> None:
         model=model,
         inference_method=run_inference,
         n_samples_each=1,
-        sample_title="normalflow",
+        sample_title="sol",
     )
 
     # View results of the runs
@@ -509,5 +509,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    cond_data_folder_title = "conditional_gen_demo"
-    load_run_display(cond_data_folder_title, 0)
+    # View individual runs if desired
+    # cond_data_folder_title = "conditional_gen_demo"
+    # load_run_display(cond_data_folder_title, 0)
