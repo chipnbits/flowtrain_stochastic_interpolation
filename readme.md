@@ -1,29 +1,46 @@
-## Install
+## 📦 Installation
 
-This repo makes use of a flowtrain package for stochastic interpolation and storing some ML models. The code for the package is in the `src/flowtrain` directory. To install the package navigate to the directory with the `setup.py` file, then run the following command:
+This repository includes the `flowtrain` package for stochastic interpolation and managing machine learning models. The source code is located in `src/flowtrain`.
+
+To install the package in editable mode, navigate to the project root (where `setup.py` is located) and run:
 
 ```bash
-pip install -e .
+    pip install -e .
 ```
 
-This package also installs a project dependency for generating synthetic data found at [https://github.com/eldadHaber/StructuralGeo/releases/tag/v1.0](url).
+This package also installs a dependency for synthetic geological data generation:  
+[`GeoGen`](https://github.com/eldadHaber/StructuralGeo/releases/tag/v1.0), which will be installed automatically via `pip`.
 
-## GeoGen usage
+---
 
-The `project` directory contains code and supporting files for flow matching (stochastic interpolation) of 3D GeoGen data.
+## GeoGen Integration
 
-Note that the code makes use of PyTorch, PyTorch Lightning, and Wandb but can be adapted to a different framework.
+The `project/` directory contains code and supporting files for training and evaluating flow-based models on 3D GeoGen data. These models are designed for stochastic interpolation using flow-matching techniques.
 
-The overall structure is designed to allow for learned categorical embeddings, adding EMA, and other techniques for better training stability.
+The codebase is built on:
 
-The best trained model for 64^3 unconditional data and 64^3 conditional data is available in the `demo_model` folder for each application under the project folder.
+- **PyTorch** for deep learning
+- **PyTorch Lightning** for cleaner training loops
+- **Weights & Biases (wandb)** for experiment tracking
 
-### Unconditional Training and Generation
-Model was trained using `model_train_inference.py` script. 
+### Pretrained Models
+Pretrained models for both **unconditional** and **conditional** generation at 64³ resolution are available. These weights are downloaded automatically on first use and stored in the `project/*/demo_model/` directory.
 
-The same script is setup to demonstrate inference using the `main()` function. 
+If desired, the weights can also be downloaded manually from the [v1.0.0 GitHub release](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/tag/v1.0.0):
 
-### Conditional Training and Generation
-Training was done with `model_train_sh_inference_cond.py` script.
+- [`conditional-weights.ckpt`](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/conditional-weights.ckpt)
+- [`unconditional-weights.ckpt`](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt)
 
-A demonstration of inference using the trained weights can be found in `model_inference_experiments.py` script.
+---
+
+## Usage
+
+### Unconditional Training & Inference
+
+- **Training script:** `model_train_inference.py`
+- **Inference demo:** Use the `main()` function in the same script to run inference with pretrained weights.
+
+### Conditional Training & Inference
+
+- **Training script:** `model_train_sh_inference_cond.py`
+- **Inference demo:** `model_inference_experiments.py` demonstrates conditional generation using pretrained weights.
