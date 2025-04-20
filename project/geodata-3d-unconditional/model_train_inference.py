@@ -779,7 +779,7 @@ def main() -> None:
         script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
         checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
         
-        weights_url = "https://https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt"
+        weights_url = "https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt"
         download_if_missing(checkpoint_path, weights_url)
         
 

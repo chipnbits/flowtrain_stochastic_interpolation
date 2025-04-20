@@ -472,7 +472,7 @@ def main() -> None:
     checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
     
     # Auto-download weights if missing
-    weights_url = "https://https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/conditional-weights.ckpt"
+    weights_url = "https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/conditional-weights.ckpt"
     download_if_missing(checkpoint_path, weights_url)
 
     model = load_model_with_ema_option(
