@@ -2,11 +2,13 @@
 Train the velocity matching objective on an infinite 3D GeoData set.
 """
 
+import argparse
 import os
+import re
 import platform
 import time
 import warnings
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -40,16 +42,20 @@ from utils import (
 )
 
 
-def get_config() -> dict:
+def get_config(args=None) -> dict:
     """
     Generates the entire configuration as a dictionary.
+
+    Args:
+        args: Command line arguments from argparse
 
     Returns:
         dict: Configuration dictionary.
     """
+    
     config = {
         "resume": True,
-        "devices": [1, 2],  # This will be adjusted automatically below
+        "devices": [0],
         # Project configurations
         "project": {
             "name": "cat-embeddings-18d-normed-64cubed",
@@ -64,12 +70,12 @@ def get_config() -> dict:
                 (-1920, 1920),
             ),
             "batch_size": 6,
-            "epoch_size": 10_000,
+            "epoch_size": 10_000, # Artificial epcoch size, all samples generated are unseen across epochs
         },
         # Categorical embedding parameters
         "embedding": {
-            "num_categories": 15,
-            "dim": 18,
+            "num_categories": 15,  # Number of categories for the embedding
+            "dim": 18,  # The 15D num_category simplex is centered at origin in 18D space
         },
         # Model parameters
         "model": {
@@ -113,23 +119,72 @@ def get_config() -> dict:
         },
     }
 
-    # Dynamically set device configurations
-    if not config["devices"]:
-        system = platform.system()
-        if system == "Windows":
-            config["devices"] = ["cuda"] if torch.cuda.is_available() else ["cpu"]
-        elif system == "Linux":
-            config["devices"] = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
-        else:
-            config["devices"] = ["cpu"]
+    # For TRAINING: parse --train-devices into Lightning-friendly values
+    accelerator, trainer_devices, _ = _parse_devices_arg(
+        getattr(args, 'train_devices', None) if args else None
+    )
+    config["accelerator"] = accelerator         # 'cpu' or 'gpu'
+    config["devices"] = trainer_devices         # 1 or [0,1,...]
 
     # Ensure model_params are updated with the embedding dimension
     config["model"]["data_channels"] = config["embedding"]["dim"]
 
     return config
 
+def _parse_devices_arg(devices_str: Optional[str]) -> Tuple[str, Union[int, List[int]], str]:
+    """Return (accelerator, trainer_devices, inference_device_str).
+
+    Accepted values for devices_str:
+    - "cpu"
+    - "auto" (all GPUs if available else CPU)
+    - comma-separated GPU indices, e.g. "0" or "0,1,2"
+    """
+    # Defaults
+    if devices_str is None:
+        devices_str = "auto"
+
+    s = devices_str.strip().lower()
+
+    # CPU
+    if s == "cpu":
+        return "cpu", 1, "cpu"
+
+    # AUTO
+    if s == "auto":
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            gpus = list(range(torch.cuda.device_count()))
+            return "gpu", gpus, f"cuda:{gpus[0]}"
+        else:
+            return "cpu", 1, "cpu"
+
+
+    # Explicit GPU index or indices
+    if re.fullmatch(r"\d+(,\d+)*", s):
+        idxs = [int(x) for x in s.split(",")]
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA not available but GPU indices were provided.")
+        max_idx = torch.cuda.device_count() - 1
+        bad = [i for i in idxs if i < 0 or i > max_idx]
+        if bad:
+            raise ValueError(
+            f"Requested GPU indices {bad} out of range [0, {max_idx}] for this machine."
+            )
+        return "gpu", idxs, f"cuda:{idxs[0]}"
+
+    raise ValueError(
+    f"Unrecognized --devices value '{devices_str}'. Use 'cpu', 'auto', or comma-separated GPU indices like '0,1,2'."
+    )
 
 def setup_directories(config):
+    """
+    Project name and root dir taken from config to form directories for training
+    
+    checkpoint_dir: where to save training models
+    photo_dir: where to save intermediate inference run outputs during training
+    emb_dir: where to save learned embeddings for categorical data, if applicable
+    samples_dir: where to save generated samples during inference trials in training
+    """
+    
     root_dir = config["project"]["root_dir"]
     project_name = config["project"]["name"]
 
@@ -249,8 +304,8 @@ class Geo3DStochInterp(LightningModule):
         num_categories: int = 15,
         embedding_dim: int = 20,
         lambda_angle: float = 0.1,
-        learning_rate: float = 2.0e-4,  # Left here due to saved model compatibility
-        lr_decay: float = 0.997,
+        learning_rate = None,  # Left here due to saved model compatibility
+        lr_decay = None, # Left here for backward compatibility
         **model_params: Any,
     ):
         super().__init__()
@@ -265,7 +320,7 @@ class Geo3DStochInterp(LightningModule):
         # Embedding layer setup
         self.embedding = nn.Embedding(self.num_categories, self.embedding_dim)
         self._initialize_embedding(self.num_categories, self.embedding_dim)
-        # Freeze embedding weights after initialization
+        # Freeze embedding weights after initialization (non-learnable)
         self.embedding.weight.requires_grad = False
 
         # Update model_params to reflect the new input channels
@@ -345,6 +400,7 @@ class Geo3DStochInterp(LightningModule):
             dim=2
         )  # [B, num_categories, X, Y, Z]
 
+        # Nearest neighbor decoder
         preds = torch.argmax(logits, dim=1)  # [B, X, Y, Z]
 
         if return_logits:
@@ -369,17 +425,10 @@ class Geo3DStochInterp(LightningModule):
 
         Args:
             batch (torch.Tensor): Batch of input data.
-            batch_idx (int): Batch index.
 
         Returns:
             torch.Tensor: Loss value.
         """
-        # Renormalize embeddings to unit ball, important for learnable embeddings and decoding metric used
-        with torch.no_grad():
-            self.embedding.weight.div_(
-                self.embedding.weight.norm(p=2, dim=1, keepdim=True)
-            )
-
         # Draw encoded geogen model. Small noise is added to prevent singularities.
         X1 = self.embed(batch)  # [B, E, X, Y, Z]
         X1 = X1 + 1e-3 * torch.randn_like(X1)
@@ -391,34 +440,17 @@ class Geo3DStochInterp(LightningModule):
             self.time_range[0], self.time_range[1]
         )  # [B,] (unifo)
 
-        # Compute objectives
-        XT, BT = self.interpolator.flow_objective(T, X0, X1)
-        BT_hat = self.net(XT, T)  # [B, E, X, Y, Z]
+        # Compute objectives with flowtrain package
+        XT, VT = self.interpolator.flow_objective(T, X0, X1)
+        VT_hat = self.net(XT, T)  # [B, E, X, Y, Z]
 
         # Compute losses
-        mse_loss = F.mse_loss(BT, BT_hat) / F.mse_loss(BT, torch.zeros_like(BT))
-
-        # Orthogonality loss on embeddings (metric if using learnable embeddings)
-        embed_norm = F.normalize(self.embedding.weight, dim=1)
-        gram_matrix = torch.matmul(embed_norm, embed_norm.t())
-        angle_loss = torch.sum(gram_matrix)  # optimal spread gives 0
-
-        # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
-        loss = mse_loss + self.lambda_angle * angle_loss
-
-        # Track the mean of the embedding vectors (useful for learnable embeddings)
-        mean_embedding = self.embedding.weight.mean(dim=0)  # Mean of embedding vectors
-        mean_embedding_norm = torch.norm(
-            mean_embedding
-        )  # Norm of the mean embedding vector
+        mse_loss = F.mse_loss(VT, VT_hat) / F.mse_loss(VT, torch.zeros_like(VT))
 
         # Log the training loss and orthogonality loss
         self.log_dict(
             {
-                "train_loss": loss,
-                "flow_loss": mse_loss,
-                "angle_loss": angle_loss,
-                "mean_embedding_norm": mean_embedding_norm,
+                "train_loss": mse_loss,
             },
             on_step=True,
             on_epoch=True,
@@ -427,72 +459,13 @@ class Geo3DStochInterp(LightningModule):
             sync_dist=False,
         )
 
-        return loss
+        return mse_loss
 
     def on_train_epoch_end(self, unused=None):
         # Log the learning rate at the end of each epoch
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("lr", lr, on_epoch=True, logger=True)
         # self._log_embedding_gram_matrix()
-
-    def _log_embedding_gram_matrix(self):
-        """
-        Helper to log a heatmap of the Gram matrix of the embedding vectors.
-        This computes the angle pariwise between all embedding vectors, useful
-        for tracking the spread of learnable embeddings.
-        """
-        # Generate the Gram matrix (self dot products) for embedding vectors
-        embed_vecs = self.embedding.weight
-        gram_matrix = (
-            torch.matmul(embed_vecs, embed_vecs.t()).detach().cpu().numpy()
-        )  # Convert to numpy
-        # Remove the diagonal elements for visualization
-        np.fill_diagonal(gram_matrix, 0)
-
-        # Create a heatmap plot with matplotlib/seaborn
-        plt.figure(figsize=(8, 6))
-        ax = sns.heatmap(gram_matrix, annot=False, cmap="coolwarm", cbar=True)
-        plt.title(f"Embedding Gram Matrix at Epoch {self.current_epoch}")
-
-        # Define groupings for the boxes and corresponding labels
-        groupings = [[0], [1], [2, 3, 4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14]]
-        labels = ["Air", "Basement", "Sediment", "Dike", "Intrusion", "Blob"]
-
-        for group, label in zip(groupings, labels):
-            # Draw a rectangle around each group
-            start = group[0]
-            end = group[-1]
-            rect = patches.Rectangle(
-                (start, start),
-                end - start + 1,
-                end - start + 1,
-                fill=False,
-                edgecolor="teal",
-                linewidth=2,
-                linestyle="--",
-            )
-            ax.add_patch(rect)
-
-            # Add a label in the center of each box
-            center_x = (start + end + 1) / 2
-            center_y = (start + end + 1) / 2
-            ax.text(
-                center_x,
-                center_y,
-                label,
-                color="black",
-                ha="center",
-                va="center",
-                fontsize=10,
-                fontweight="bold",
-                alpha=0.7,
-            )
-
-        # Log the plot directly to Wandb via the logger
-        self.logger.experiment.log({"embedding_gram_matrix": wandb.Image(plt)})
-
-        # Close the plot to free memory
-        plt.close()
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """
@@ -559,6 +532,7 @@ def launch_training(config, dirs, device: str) -> None:
     # Initialize Trainer
     trainer = Trainer(
         max_epochs=config["training"]["max_epochs"],
+        accelerator=config["accelerator"],
         devices=config["devices"],
         logger=logger,
         callbacks=callbacks_as_list,
@@ -753,36 +727,108 @@ def test_inspect_data(data_loader: DataLoader) -> None:
         plot_static_views(b.detach().cpu()).show()
 
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Train or run inference on 3D geological models using stochastic interpolation",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    parser.add_argument(
+        '--mode', 
+        choices=['train', 'inference', 'both'], 
+        default='inference',
+        help='Mode to run: train, inference, or both'
+    )
+    
+    parser.add_argument(
+        '--train-devices',
+        type=str,
+        default='0',
+        help="Training devices: 'cpu', 'auto', '0', or '0,1,2' (comma-separated GPU indices)"
+    )
+
+    parser.add_argument(
+        '--infer-device',
+        choices=['cpu', 'cuda'],
+        default='cuda' if torch.cuda.is_available() else 'cpu',
+        help="Inference device: 'cpu' or 'cuda'"
+    )
+    
+    parser.add_argument(
+        '--n-samples', 
+        type=int, 
+        default=8,
+        help='Number of samples to generate during inference'
+    )
+    
+    parser.add_argument(
+        '--batch-size', 
+        type=int, 
+        default=1,
+        help='Batch size for inference'
+    )
+    
+    parser.add_argument(
+        '--seed', 
+        type=int, 
+        default=100,
+        help='Random seed for inference'
+    )
+    
+    parser.add_argument(
+        '--save-images', 
+        action='store_true',
+        help='Save visualization images during inference'
+    )
+    
+    parser.add_argument(
+        '--checkpoint-path',
+        type=str,
+        default=None,
+        help='Path to specific checkpoint file (if not provided, uses demo model)'
+    )
+    
+    return parser.parse_args()
+
+
 def main() -> None:
     """
     Main function to execute training or inference based on user needs.
     """
-    config = get_config()
+    args = parse_arguments()
+    config = get_config(args)
     dirs = setup_directories(config)
 
     device = config["devices"]
+    
+    print(f"Running in {args.mode} mode on device: {device}")
 
-    run_training = False
-    run_inference_flag = True
-
-    if run_training:
+    if args.mode in ['train', 'both']:
+        print("Starting training...")
         launch_training(config, dirs, device)
 
-    if run_inference_flag:
-
-        inference_device = "cuda:0"
-
-        relative_checkpoint_path = os.path.join(
-            "demo_model", "unconditional-weights.ckpt"
-        )
+    if args.mode in ['inference', 'both']:
+        print("Starting inference...")
         
-        script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
-        checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
-        
-        weights_url = "https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt"
-        download_if_missing(checkpoint_path, weights_url)
-        
+        inference_device = args.infer_device
+        if inference_device == 'cuda' and not torch.cuda.is_available():
+            raise RuntimeError("Requested --infer-device cuda but CUDA is not available.")
 
+        # Use provided checkpoint or default demo model
+        if args.checkpoint_path:
+            checkpoint_path = args.checkpoint_path
+        else:
+            relative_checkpoint_path = os.path.join(
+                "demo_model", "unconditional-weights.ckpt"
+            )
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
+            
+            weights_url = "https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt"
+            download_if_missing(checkpoint_path, weights_url)
+
+        print(f"Loading model from: {checkpoint_path}")
         model = Geo3DStochInterp.load_from_checkpoint(
             checkpoint_path, map_location=inference_device
         ).to(inference_device)
@@ -791,12 +837,14 @@ def main() -> None:
             dirs,
             inference_device,
             model=model,
-            n_samples=8,
-            batch_size=1,
+            n_samples=args.n_samples,
+            batch_size=args.batch_size,
             data_shape=(64, 64, 64),
-            inference_seed=100,
-            save_imgs=False,
+            inference_seed=args.seed,
+            save_imgs=args.save_images,
         )
+        
+        print(f"Inference completed! Results saved to: {dirs['samples_dir']}")
 
 
 if __name__ == "__main__":

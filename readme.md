@@ -35,12 +35,33 @@ If desired, the weights can also be downloaded manually from the [v1.0.0 GitHub 
 
 ## Usage
 
-### Unconditional Training & Inference
+### Unconditional Model
 
-- **Training script:** `model_train_inference.py`
+- **Training:** `project/geodata-3d-unconditional/train_unconditional.py`
+Training parameters can be edited via the `get_config()` function in the script, currently set to values used in training the saved demo model. To train on multiple GPUs, use the `--train-devices` flag.
+
+```bash
+cd project/geodata-3d-unconditional
+
+python train_inference_unconditional.py --mode train --train-devices 0,1
+```
+
+- **Inference:**
+Pretrained weights are setup to load automatically, custom training checkpoint available with `--checkpoint_path` flag.
+
+
 - **Inference demo:** Use the `main()` function in the same script to run inference with pretrained weights.
 
+```bash
+cd project/geodata-3d-unconditional
+
+# Saves tensors + PNGs to project/samples/<project_name>/
+python train_inference_unconditional.py --mode inference --n-samples 8 --batch-size 2 --seed 100 --save-images --infer-device cuda
+```
+
 ### Conditional Training & Inference
+
+Conditional training and inference requires an additional step to set up the surface and borehole data from a random generated StructuralGeo sample.
 
 - **Training script:** `model_train_sh_inference_cond.py`
 - **Inference demo:** `model_inference_experiments.py` demonstrates conditional generation using pretrained weights.

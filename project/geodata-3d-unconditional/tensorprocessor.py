@@ -21,10 +21,10 @@ from geogen.model import GeoModel
 DEFAULT_BOUNDS = ((-3840, 3840), (-3840, 3840), (-1920, 1920))
 
 def main():
-    proj_name = "cat-embeddings-time-samples"
+    proj_name = "cat-embeddings-18d-normed-64cubed"
     saved_tensors_dir = os.path.join(os.path.dirname(__file__), "samples", proj_name)
     save_imgs_dir = os.path.join(os.path.dirname(__file__), "images", proj_name)
-    save_emb_dir = os.path.join(os.path.dirname(__file__), "embeddings", proj_name)
+    
     os.makedirs(save_imgs_dir, exist_ok=True)
 
     bounds = ((-1920,1920), (-1920, 1920), (-1920, 1920))
@@ -34,8 +34,8 @@ def main():
     
     make_views(saved_tensors_dir, save_imgs_dir, view_type='vol', bounds=bounds, )
     make_views(saved_tensors_dir, save_imgs_dir, view_type='cat', bounds=bounds,  )
-    make_views(saved_tensors_dir, save_imgs_dir, animate=True, view_type='vol', bounds=bounds, delay_on_last_frame=3,)
-    make_views(saved_tensors_dir, save_imgs_dir, animate=True, view_type='cat', bounds=bounds, delay_on_last_frame=3,)
+    # make_views(saved_tensors_dir, save_imgs_dir, animate=True, view_type='vol', bounds=bounds, delay_on_last_frame=3,)
+    # make_views(saved_tensors_dir, save_imgs_dir, animate=True, view_type='cat', bounds=bounds, delay_on_last_frame=3,)
 
 def load_embedding(file_path: str):
     """Load the nn.Embedding layer from a saved state dict file."""
@@ -76,12 +76,12 @@ def process_folder_of_tensors(dir: str, action: callable, embedding=None):
     """Process a folder of tensors with a given action."""
     for root, dirs, files in os.walk(dir):
         for file in files:
-            if file.endswith(".pt"):
+            if file.endswith(".pt") and file.startswith("decoded"):
                 tensor = torch.load(os.path.join(root, file), map_location=torch.device('cpu'))
                 if embedding is not None:
                     tensor = decode_with_loaded_embedding(tensor, embedding)
                    
-                tensor = tensor - 1
+                tensor = tensor - 1 # Adjust categories to -1 to 16 from [0,17]
                 action(tensor=tensor, filename=file)
 
 
@@ -122,6 +122,8 @@ def plot_tensor(tensor: torch.Tensor, view_type: str, bounds=None, plotter=None)
 def save_final_frame(tensor: torch.Tensor, save_dir: str, filename: str, view_type: str, bounds=None):
     """ Save the last frame of a tensor as an image for the specified view_type."""
     filename = filename.split(".")[0]
+    if tensor.ndim == 3:
+        tensor = tensor.unsqueeze(0)  # Add a channel dimension
     tensor = tensor[-1].round()
 
     # Get the plotter with the tensor plotted
@@ -131,6 +133,10 @@ def save_final_frame(tensor: torch.Tensor, save_dir: str, filename: str, view_ty
     file_path = os.path.join(save_dir, f"{filename}_{view_type}_final.png")
     p.screenshot(file_path, scale=1, transparent_background=True)
     p.close()
+    
+    p = pv.Plotter(off_screen=False)
+    p = plot_tensor(tensor, view_type, bounds, plotter=p)
+    p.show()
 
 
 def animate_tensor_to_gif(tensor: torch.Tensor, save_dir: str, filename: str, view_type='vol', bounds=None, delay_on_last_frame: int = 3):
