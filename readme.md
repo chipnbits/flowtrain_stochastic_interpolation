@@ -82,6 +82,9 @@ An automated python script has also been provided to automatically generate synt
 ```bash
 cd project/geodata-3d-conditional
 
-python model_inference_experiments.py --n-samples 4 --n-scenarios 1 
+python model_inference_experiments.py --n-samples 4 --n-scenarios 1
+
 ```
+
+[![DOI](https://zenodo.org/badge/891713525.svg)](https://doi.org/10.5281/zenodo.16924445)
 
