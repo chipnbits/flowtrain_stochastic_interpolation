@@ -1,3 +1,4 @@
+import argparse
 import os
 import platform
 import time
@@ -11,10 +12,10 @@ import seaborn as sns
 import torch
 import json
 
-#from cpu_binding import affinity, num_threads
-#if affinity: # https://github.com/pytorch/pytorch/issues/99625
+# from cpu_binding import affinity, num_threads
+# if affinity: # https://github.com/pytorch/pytorch/issues/99625
 #    os.sched_setaffinity(os.getpid(), affinity)
-#if num_threads > 0:
+# if num_threads > 0:
 #    torch.set_num_threads(num_threads)
 #    torch.set_num_interop_threads(num_threads)
 
@@ -46,31 +47,36 @@ from utils import (
 )
 
 ROOT_DIR = "/scratch/okhmakv/SI"
-os.environ["WANDB_MODE"]="disabled"
+os.environ["WANDB_MODE"] = "disabled"
 NUM_WORKERS = 16
-CPUS_PER_TASK = "auto" # 192
-NUM_NODES = int(os.environ['SLURM_NNODES'])
+CPUS_PER_TASK = "auto"  # 192
+try:
+    NUM_NODES = int(os.environ["SLURM_NNODES"])
+except KeyError:
+    NUM_NODES = 1
 
-def get_config() -> dict:
-    """cd
+
+def get_config(args=None) -> dict:
+    """
     Generates the entire configuration as a dictionary.
+
+    Args:
+        args: Command line arguments from argparse
 
     Returns:
         dict: Configuration dictionary.
     """
     config = {
         "resume": True,
-        #"devices": [0, 1, 2],  # This will be adjusted automatically below
-        "devices": None,  # This will be adjustecd sub  d automatically below
-        # Project configurationsvim 
+        "devices": [0,1,2],  # Adjusted below with argparse
+        # Project configurations
         "project": {
             "name": "15c_64_b8_ac4_lr1_3_64n_combined",
-            # "root_dir": os.path.dirname(os.path.abspath(__file__)),
-            "root_dir": ROOT_DIR, 
+            "root_dir": ROOT_DIR,
         },
         # Data loader configurations
         "data": {
-            "bounds": ( 
+            "bounds": (
                 (-1920, 1920),
                 (-1920, 1920),
                 (-1920, 1920),
@@ -78,10 +84,8 @@ def get_config() -> dict:
             "batch_size": 8,
             "epoch_size": 20_000,
             "shape": (64, 64, 64),  # [C, X, Y, Z]
-            #"shape": (16, 16, 16),  # [C, X, Y, Z]
-            #"epoch_size": 32,
         },
-        # Categorical embedding parameterssque
+        # Categorical embedding parameters
         "embedding": {
             "num_categories": 15,
             "dim": 15,
@@ -115,7 +119,6 @@ def get_config() -> dict:
             "learning_rate": 1e-3,
             "lr_decay": 0.999,
             "gradient_clip_val": 3e-1,
-            #"gradient_clip_val": 1e-2,
             "accumulate_grad_batches": 4,
             "log_every_n_steps": 1,
             # --- EMA configuration ---
@@ -135,19 +138,37 @@ def get_config() -> dict:
     }
 
     # Dynamically set device configurations
-    if not config["devices"]:
-        system = platform.system()
-        if system == "Windows":
-            config["devices"] = ["cuda"] if torch.cuda.is_available() else ["cpu"]
-        elif system == "Linux":
-            config["devices"] = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
+    if config["devices"] is None:
+        if args and hasattr(args, "device"):
+            if args.device == "auto":
+                system = platform.system()
+                if system == "Windows":
+                    config["devices"] = (
+                        ["cuda"] if torch.cuda.is_available() else ["cpu"]
+                    )
+                elif system == "Linux":
+                    config["devices"] = (
+                        ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
+                    )
+                else:
+                    config["devices"] = ["cpu"]
+            else:
+                config["devices"] = [args.device]
         else:
-            config["devices"] = ["cpu"]
+            # Default auto-detection
+            system = platform.system()
+            if system == "Windows":
+                config["devices"] = ["cuda"] if torch.cuda.is_available() else ["cpu"]
+            elif system == "Linux":
+                config["devices"] = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
+            else:
+                config["devices"] = ["cpu"]
 
     # Ensure model_params are updated with the embedding dimension
     config["model"]["data_channels"] = config["embedding"]["dim"]
 
     return config
+
 
 def setup_directories(config):
     root_dir = config["project"]["root_dir"]
@@ -158,7 +179,7 @@ def setup_directories(config):
         "photo_dir": os.path.join(root_dir, "images", project_name),
         "emb_dir": os.path.join(root_dir, "embeddings", project_name),
         "samples_dir": os.path.join(root_dir, "samples", project_name),
-        "training_logs": os.path.join(root_dir, "training_logs", project_name)
+        "training_logs": os.path.join(root_dir, "training_logs", project_name),
     }
 
     for path in dirs.values():
@@ -196,14 +217,6 @@ def create_callbacks(config, dirs) -> Dict[str, Callback]:
             monitor="epoch",
             mode="max",
         ),
-        #"inference_callback": InferenceCallback(
-        #    save_dir=dirs["photo_dir"],
-        #   every_n_epochs=0, # DISABLED FOR NOW (SUPER SLOW ON CPU)
-        #   n_samples=4,
-        #   n_steps=32,
-        #   tf=0.999,
-        #   seed=42,
-        #),
     }
 
     if config["training"].get("use_ema", False):
@@ -408,7 +421,6 @@ class Geo3DStochInterp(LightningModule):
         """
 
         # Draw encoded geogen model. Small noise is added to prevent singularities.
-        t0 = time.time()
         X1 = self.embed(batch)  # [B, E, X, Y, Z]
         mask_boreholes = make_combined_mask(batch).expand(
             -1, X1.shape[1], -1, -1, -1
@@ -424,29 +436,29 @@ class Geo3DStochInterp(LightningModule):
             self.time_range[0], self.time_range[1]
         )  # [B,] (unifo)
 
-        # Compute objectivesu   
-        XT, BT = self.interpolator.flow_objective(T, X0, X1)
-        t00 = time.time()
-        BT_hat = self.net(XT, ATb, T)  # [B, E, X, Y, Z]
-        t11 = time.time()
+        # Compute objectives
+        XT, VT = self.interpolator.flow_objective(T, X0, X1)
+        VT_hat = self.net(XT, ATb, T)  # [B, E, X, Y, Z]
 
+        # Compute straight line estimated reconstruction
         T_broadcasted = T.view(-1, 1, 1, 1, 1)  # Shape: [6, 1, 1, 1, 1]
         b_hat = (
-            XT[mask_boreholes] + ((1 - T_broadcasted) * BT_hat)[mask_boreholes]
+            XT[mask_boreholes] + ((1 - T_broadcasted) * VT_hat)[mask_boreholes]
         )  # [B, E, X, Y, Z]
 
         # Compute losses
-        mse_loss = F.mse_loss(BT, BT_hat) / (F.mse_loss(BT, torch.zeros_like(BT))+1e-6)
-        # Weight reconstruction loss by time
+        mse_loss = F.mse_loss(VT, VT_hat) / (
+            F.mse_loss(VT, torch.zeros_like(VT)) + 1e-6
+        )
+        # Weight reconstruction loss (b_hat should match b and converge)
         weighted_reconstruct_loss = (
-            T_broadcasted.squeeze() * F.mse_loss(b, b_hat)  # Multiply by T
+            T_broadcasted.squeeze()
+            * F.mse_loss(b, b_hat)  # Multiply by T to make later values more important
         ) / (F.mse_loss(X1, torch.zeros_like(X1)) + 1e-6)
         weighted_reconstruct_loss = weighted_reconstruct_loss.mean()
-        
+
         # Total loss includes MSE loss and angle loss (penalty for embedding similarity)
         loss = mse_loss + self.lambda_reconstruct * weighted_reconstruct_loss
-        t1 = time.time()
-        #print("LOSS TIME",loss,t1-t0,t11-t00,flush=True)
 
         # Log the training loss and orthogonality loss
         self.log_dict(
@@ -470,22 +482,17 @@ class Geo3DStochInterp(LightningModule):
         self.log("lr", lr, on_epoch=True, logger=True)
 
         print(f"Epoch {self.current_epoch}: Learning Rate = {lr}")
-        #print(f"Epoch {self.current_epoch}: Learning rate {lr} saved to {file_path}", flush=True)
-
 
     def on_after_backward(self):
-        
         """Logs gradient norms after the backward pass."""
         total_norm = 0
         for p in self.parameters():
             if p.grad is not None:
                 param_norm = p.grad.detach().data.norm(2)  # L2 norm of gradients
                 total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** 0.5  # Compute final norm
+        total_norm = total_norm**0.5  # Compute final norm
         self.log("grad_norm", total_norm, on_step=True, sync_dist=True)
         print(f"Gradient Norm: {total_norm:.6f}")
-        
-
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """
@@ -527,10 +534,14 @@ def launch_training(config, dirs) -> None:
 
     # Configure Weights & Biases logger
     logger = WandbLogger(
-        project=config["project"]["name"], resume="allow", log_model=True,
+        project=config["project"]["name"],
+        resume="allow",
+        log_model=True,
     )
 
-    csv_logger = CSVLogger(save_dir=dirs["training_logs"],)
+    csv_logger = CSVLogger(
+        save_dir=dirs["training_logs"],
+    )
     logger.log_hyperparams(config)
 
     csv_logger.log_hyperparams(config)
@@ -540,13 +551,13 @@ def launch_training(config, dirs) -> None:
     callbacks_list = list(callbacks_dict.values())
 
     # Initialize Trainer
-    #print(os.environ)
+    # print(os.environ)
     trainer = Trainer(
         max_epochs=config["training"]["max_epochs"],
         # devices=config["devices"],
         devices=CPUS_PER_TASK,
         accelerator="cpu",
-        #strategy="ddp",
+        # strategy="ddp",
         num_nodes=NUM_NODES,
         callbacks=callbacks_list,
         logger=[logger, csv_logger],
@@ -555,8 +566,10 @@ def launch_training(config, dirs) -> None:
         log_every_n_steps=config["training"]["log_every_n_steps"],
     )
 
-    print("trainer",NUM_NODES,trainer.global_rank,trainer.local_rank,trainer.node_rank)
-    #exit()
+    print(
+        "trainer", NUM_NODES, trainer.global_rank, trainer.local_rank, trainer.node_rank
+    )
+    # exit()
     trainer.ema_callback = callbacks_dict.get("ema_callback", None)
 
     # Test basic functionality before training begins
@@ -606,13 +619,32 @@ def test_inspect_data(data_loader: DataLoader) -> None:
         plot_static_views(b.detach().cpu()).show()
 
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Train conditional 3D geological models using stochastic interpolation",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda", "cuda:0", "cuda:1", "cuda:2"],
+        default="auto",
+        help="Device to use for computation",
+    )
+
+    return parser.parse_args()
+
+
 def main() -> None:
     """
     Main function to execute training or inference based on user needs.
     """
-    config = get_config()
+    args = parse_arguments()
+    config = get_config(args)
     dirs = setup_directories(config)
 
+    print(f"Running conditional training on device: {config['devices']}")
     launch_training(config, dirs)
 
 
