@@ -366,19 +366,19 @@ def save_solutions(solutions, save_dir, sample_title="sol", start_index=0):
         torch.save(sol, os.path.join(save_dir, f"{sample_title}_{i+start_index}.pt"))
 
 
-def load_model_and_boreholes(save_dir):
+def load_model_and_boreholes(save_dir, device='cpu'):
     # Load the tensor data for the model and boreholes
-    model = torch.load(os.path.join(save_dir, "true_model.pt"))
-    boreholes = torch.load(os.path.join(save_dir, "boreholes.pt"))
+    model = torch.load(os.path.join(save_dir, "true_model.pt"), map_location=device)
+    boreholes = torch.load(os.path.join(save_dir, "boreholes.pt"), map_location=device)
     return model, boreholes
 
 
-def load_solutions(save_dir, sample_title="sol"):
+def load_solutions(save_dir, sample_title="sol", device='cpu'):
     # index all files starting with "sol_" in the save_dir
     sol_files = [f for f in os.listdir(save_dir) if f.startswith(sample_title)]
     solutions = [None] * len(sol_files)
     for i, sol_file in enumerate(sol_files):
-        solutions[i] = torch.load(os.path.join(save_dir, sol_file))
+        solutions[i] = torch.load(os.path.join(save_dir, sol_file), map_location=device)
 
     # Turn into one tensor wit batch dimension
     return torch.stack(solutions)
@@ -542,6 +542,7 @@ def main() -> None:
         inference_device = cfg["devices"]
     
     print(f"Running conditional inference on device: {inference_device}")
+    inference_device = 'cpu'
 
     # Use provided checkpoint or default demo model
     if args.checkpoint_path:
