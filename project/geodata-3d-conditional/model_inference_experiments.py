@@ -1,3 +1,4 @@
+import argparse
 import os
 import torch
 import time
@@ -10,7 +11,7 @@ from boreholes import make_boreholes_mask, make_combined_mask, make_surface_mask
 from geogen.dataset import GeoData3DStreamingDataset
 from geogen.model import GeoModel
 import geogen.plot as geovis
-from model_train_ema_mixedpres_lowvram import (
+from model_train_sh_inference_cond import (
     Geo3DStochInterp,
     get_data_loader,
     ODEFlowSolver,
@@ -18,18 +19,19 @@ from model_train_ema_mixedpres_lowvram import (
 from utils import download_if_missing
 
 
-def get_config() -> dict:
+def get_config(args=None) -> dict:
     """
     Generates the entire configuration as a dictionary.
+
+    Args:
+        args: Command line arguments from argparse
 
     Returns:
         dict: Configuration dictionary.
     """
-    devices = [0, 1, 2]  # List of GPU devices to use
-
     config = {
         "resume": True,
-        "devices": devices,
+        "devices": getattr(args, 'devices', None) if args else None,
         # Project configurations
         "project": {
             "name": "generative-conditional-3d",
@@ -80,7 +82,7 @@ def get_config() -> dict:
             "learning_rate": 5.0e-4,
             "lr_decay": 0.999,
             "gradient_clip_val": 1e-2,
-            "accumulate_grad_batches": int(4 * 3 / len(devices)),
+            "accumulate_grad_batches": 4,
             "log_every_n_steps": 16,
             # --- EMA configuration ---
             "use_ema": True,
@@ -99,14 +101,27 @@ def get_config() -> dict:
     }
 
     # Dynamically set device configurations
-    if not config["devices"]:
-        system = platform.system()
-        if system == "Windows":
-            config["devices"] = ["cuda"] if torch.cuda.is_available() else ["cpu"]
-        elif system == "Linux":
-            config["devices"] = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
+    if config["devices"] is None:
+        if args and hasattr(args, 'device'):
+            if args.device == 'auto':
+                system = platform.system()
+                if system == "Windows":
+                    config["devices"] = ["cuda"] if torch.cuda.is_available() else ["cpu"]
+                elif system == "Linux":
+                    config["devices"] = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
+                else:
+                    config["devices"] = ["cpu"]
+            else:
+                config["devices"] = [args.device]
         else:
-            config["devices"] = ["cpu"]
+            # Default auto-detection
+            system = platform.system()
+            if system == "Windows":
+                config["devices"] = ["cuda"] if torch.cuda.is_available() else ["cpu"]
+            elif system == "Linux":
+                config["devices"] = ["cuda:0"] if torch.cuda.is_available() else ["cpu"]
+            else:
+                config["devices"] = ["cpu"]
 
     # Ensure model_params are updated with the embedding dimension
     config["model"]["data_channels"] = config["embedding"]["dim"]
@@ -147,7 +162,7 @@ def create_cond_data(
         synthetic_model = dataset[0].unsqueeze(0)  # [1, 1, X, Y, Z]
         boreholes_mask = make_combined_mask(synthetic_model)  # [1, 1, X, Y, Z]
         boreholes = synthetic_model.clone()
-        boreholes[~boreholes_mask] = -1  # delete rock around boreholes
+        boreholes[~boreholes_mask] = -1  # delete rock around boreholes by setting to air sentinel category -1
 
         # Save the original model and boreholes
         save_model_and_boreholes(synthetic_model, boreholes, run_dir)
@@ -245,7 +260,11 @@ def populate_solutions(
     -----------
     save_dir (str): Directory containing the conditioning data from create_cond_data.
     cond_data_folder_title (str): The title structure of conditioning data folders.
+    device (str): Device to run the inference on (e.g., "cuda", "cpu").
+    model (Geo3DStochInterp): The model to use for inference.
+    inference_method (callable): The inference method to use (default: run_inference).
     n_samples_each (int): Number of samples to generate for each conditioning data folder.
+    batch_size (int): Batch size to use for inference.
     sample_title (str): Title for the generated samples file naming.
     """
     # Find all the folders with the cond_data_folder_title within save_dir
@@ -255,18 +274,19 @@ def populate_solutions(
 
     for folder in cond_data_folders:
         folder_path = os.path.join(save_dir, folder)
-        geomodel, boreholes = load_model_and_boreholes(folder_path)
+        true_data, boreholes = load_model_and_boreholes(folder_path)
 
         # Send to same device as model
-        geomodel = geomodel.to(device)
+        true_data = true_data.to(device)
         boreholes = boreholes.to(device)
         # Reconstruct mask (air above, rocks below)
-        boreholes_mask = (boreholes != -1) | (geomodel == -1)
+        boreholes_mask = (boreholes != -1) | (true_data == -1)
 
         # Embed the ground truth model
-        X1 = model.embed(geomodel)
+        X1 = model.embed(true_data)
         ATb = X1.clone()
 
+        # Mask out the air, surface, and boreholes from the true model (embedded)
         mask_boreholes = boreholes_mask.expand(-1, X1.shape[1], -1, -1, -1)
         ATb = X1 * mask_boreholes
 
@@ -353,9 +373,9 @@ def load_model_and_boreholes(save_dir):
     return model, boreholes
 
 
-def load_solutions(save_dir):
+def load_solutions(save_dir, sample_title="sol"):
     # index all files starting with "sol_" in the save_dir
-    sol_files = [f for f in os.listdir(save_dir) if f.startswith("sol_")]
+    sol_files = [f for f in os.listdir(save_dir) if f.startswith(sample_title)]
     solutions = [None] * len(sol_files)
     for i, sol_file in enumerate(sol_files):
         solutions[i] = torch.load(os.path.join(save_dir, sol_file))
@@ -459,56 +479,124 @@ def ensemble_analysis():
     # Expand solutions out using 1 hot
     print("")   
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Run conditional inference experiments on 3D geological models",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    parser.add_argument(
+        '--device', 
+        choices=['auto', 'cpu', 'cuda', 'cuda:0', 'cuda:1', 'cuda:2'], 
+        default='auto',
+        help='Device to use for computation'
+    )
+    
+    parser.add_argument(
+        '--n-samples', 
+        type=int, 
+        default=1,
+        help='Number of samples to generate for each conditioning scenario'
+    )
+    
+    parser.add_argument(
+        '--n-scenarios', 
+        type=int, 
+        default=4,
+        help='Number of conditioning scenarios to create'
+    )
+    
+    parser.add_argument(
+        '--use-ema', 
+        action='store_true',
+        default=True,
+        help='Use EMA (Exponential Moving Average) model weights'
+    )
+    
+    parser.add_argument(
+        '--checkpoint-path',
+        type=str,
+        default=None,
+        help='Path to specific checkpoint file (if not provided, uses demo model)'
+    )
+    
+    parser.add_argument(
+        '--no-display',
+        action='store_true',
+        help='Skip displaying results (useful for headless systems)'
+    )
+    
+    return parser.parse_args()
+
+
 def main() -> None:
-    cfg = get_config()
+    args = parse_arguments()
+    cfg = get_config(args)
     dirs = setup_directories(cfg)
 
-    # Load the trained conditional generation model
-    use_ema = True  # Turn on the EMA model weights
-    inference_device = "cuda"
-    relative_checkpoint_path = os.path.join("demo_model", "conditional-weights.ckpt")
+    # Determine inference device
+    if isinstance(cfg["devices"], list):
+        inference_device = cfg["devices"][0]
+    else:
+        inference_device = cfg["devices"]
     
-    script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
-    checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
-    
-    # Auto-download weights if missing
-    weights_url = "https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/conditional-weights.ckpt"
-    download_if_missing(checkpoint_path, weights_url)
+    print(f"Running conditional inference on device: {inference_device}")
 
+    # Use provided checkpoint or default demo model
+    if args.checkpoint_path:
+        checkpoint_path = args.checkpoint_path
+    else:
+        relative_checkpoint_path = os.path.join("demo_model", "conditional-weights.ckpt")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        checkpoint_path = os.path.join(script_dir, relative_checkpoint_path)
+        
+        # Auto-download weights if missing
+        weights_url = "https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/conditional-weights.ckpt"
+        download_if_missing(checkpoint_path, weights_url)
+
+    print(f"Loading model from: {checkpoint_path}")
     model = load_model_with_ema_option(
         ckpt_path=checkpoint_path,
         map_location=inference_device,
-        use_ema=use_ema,
+        use_ema=args.use_ema,
     )
 
     cond_data_folder_title = "conditional_gen_demo"
 
     # Create the conditioning data
-    num_folders = 4
+    print(f"Creating {args.n_scenarios} conditioning scenarios...")
     create_cond_data(
         save_dir=dirs["samples_dir"],
         cond_data_folder_title=cond_data_folder_title,
         device=inference_device,
-        num_folders=num_folders,
+        num_folders=args.n_scenarios,
     )
 
     # Populate the solutions
+    print(f"Generating {args.n_samples} samples for each scenario...")
     populate_solutions(
         save_dir=dirs["samples_dir"],
         cond_data_folder_title=cond_data_folder_title,
         device=inference_device,
         model=model,
         inference_method=run_inference,
-        n_samples_each=1,
+        n_samples_each=args.n_samples,
         sample_title="sol",
     )
 
-    # View results of the runs
-    for i in range(num_folders):
-        load_run_display(
-            folder_title=cond_data_folder_title,
-            run_num=i,
-        )
+    print(f"Inference completed! Results saved to: {dirs['samples_dir']}")
+
+    # View results of the runs (skip if no-display is set)
+    if not args.no_display:
+        print("Displaying results...")
+        for i in range(args.n_scenarios):
+            load_run_display(
+                folder_title=cond_data_folder_title,
+                run_num=i,
+            )
+    else:
+        print("Skipping display (--no-display flag set)")
 
 
 if __name__ == "__main__":

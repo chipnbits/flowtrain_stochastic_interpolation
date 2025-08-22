@@ -14,10 +14,13 @@ setup(
       "torchdiffeq",
       "numpy",
       "torch",
+      "lightning",
       "torchvision",
       "einops",
       "matplotlib",
       "tqdm",
+      "seaborn",
+      "wandb",
       "GeoGen @ git+https://github.com/eldadHaber/StructuralGeo.git@v1.0"
   ],
 )
