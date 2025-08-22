@@ -63,5 +63,25 @@ python train_inference_unconditional.py --mode inference --n-samples 8 --batch-s
 
 Conditional training and inference requires an additional step to set up the surface and borehole data from a random generated StructuralGeo sample.
 
-- **Training script:** `model_train_sh_inference_cond.py`
-- **Inference demo:** `model_inference_experiments.py` demonstrates conditional generation using pretrained weights.
+- **Training:** `model_train_sh_inference_cond.py`
+
+Training parameters can be adjusted via the `get_config()` function in the script. Script is set to the training regime used for the pretrained conditional model provided.
+
+```bash
+cd project/geodata-3d-conditional
+
+python model_train_sh_inference_cond.py
+```
+
+
+- **Inference:**
+A Jupyter notebook `project/geodata-3d-conditional/inference_demo.ipynb` is provided to demonstrate generating conditional data, loading the saved weights, and running inference with the pretrained model. An additional probabilistic analysis using an ensemble of models is also included, making use of compressed data in the `dikes_ptpack.tar.gz` archive.
+
+An automated python script has also been provided to automatically generate synthetic geology, extract boreholde data, and produce reconstructions:
+
+```bash
+cd project/geodata-3d-conditional
+
+python python model_inference_experiments.py --n-samples 4 --n-scenarios 1 
+```
+
