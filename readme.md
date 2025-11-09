@@ -43,7 +43,7 @@ Training parameters can be edited via the `get_config()` function in the script,
 ```bash
 cd project/geodata-3d-unconditional
 
-python train_inference_unconditional.py --mode train --train-devices 0,1
+python model_train_inference.py --mode train --train-devices 0,1
 ```
 
 - **Inference demo:** Use the `main()` function in the same script to run inference with pretrained weights. Optional flags include:
@@ -61,7 +61,7 @@ Note that the pretrained weights are setup to load automatically, custom trainin
 cd project/geodata-3d-unconditional
 
 # Saves tensors + PNGs to project/samples/<project_name>/
-python train_inference_unconditional.py --mode inference --n-samples 8 --batch-size 2 --seed 100 --infer-device cuda
+python model_train_inference.py --mode inference --n-samples 8 --batch-size 2 --seed 100 --infer-device cuda
 ```
 
 ### Conditional Training & Inference
@@ -70,7 +70,7 @@ Conditional training and inference requires an additional step to set up the sur
 
 - **Training:** `model_train_sh_inference_cond.py`
 
-Training parameters can be adjusted via the `get_config()` function inside of the script. Script is set to the training regime that wasused for the pretrained conditional model provided.
+Training parameters can be adjusted via the `get_config()` function inside of the script. Script is set to use the same set of hyper parameters that were used for the pretrained conditional model provided.
 
 ```bash
 cd project/geodata-3d-conditional
@@ -81,14 +81,23 @@ python model_train_sh_inference_cond.py
 - **Inference:**
 A Jupyter notebook `project/geodata-3d-conditional/inference_demo.ipynb` is provided to demonstrate generating conditional data, loading the saved weights, and running inference with the pretrained model. An additional probabilistic analysis using an ensemble of models is also included, making use of compressed data in the `dikes_ptpack.tar.gz` archive.
 
-An automated python script has also been provided to automatically generate synthetic geology, extract boreholde data, and produce reconstructions:
+An automated python script has also been provided to automatically generate synthetic geology, extract borehold data, and produce reconstructions:
 
 ```bash
 cd project/geodata-3d-conditional
 
 python model_inference_experiments.py --n-samples 4 --n-scenarios 1
-
 ```
+
+Available flags include:
+- `--device`: Device for inference, e.g., `cuda` or `cpu` (default: `cpu`)
+- `--n-samples`: Number of samples to generate per scenario (default: 1)
+- `--n-scenarios`: Number of different geological scenarios to generate for sample reconstruction (default: 4)
+- `--use-ema`: Use EMA weights for inference (default: True)
+- `--no-display`: Disable displaying images during inference (default: display images)
+- `--checkpoint_path`: Path to custom checkpoint file to override pretrained weights (default: use pretrained weights)
+
+
 
 [![DOI](https://zenodo.org/badge/891713525.svg)](https://doi.org/10.5281/zenodo.16924445)
 

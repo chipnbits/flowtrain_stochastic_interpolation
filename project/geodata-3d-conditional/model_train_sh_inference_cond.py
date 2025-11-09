@@ -1,16 +1,9 @@
 import argparse
 import os
 import platform
-import time
-import warnings
 from typing import Any, Dict, List, Tuple, Optional
-from functools import partial
 
-import matplotlib.pyplot as plt
-import numpy as np
-import seaborn as sns
 import torch
-import json
 
 # from cpu_binding import affinity, num_threads
 # if affinity: # https://github.com/pytorch/pytorch/issues/99625
@@ -21,10 +14,7 @@ import json
 
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
-from matplotlib import patches
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 # Third-party libraries
 from lightning import Trainer
