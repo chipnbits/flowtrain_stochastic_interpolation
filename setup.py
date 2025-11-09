@@ -8,19 +8,4 @@ setup(
   description='Generative AI for geogen data with stochastic interpolation',
   author='Simon Ghyselincks',
   author_email='sghyselincks@gmail.com',
-  install_requires=[
-      "scipy",
-      "denoising-diffusion-pytorch",
-      "torchdiffeq",
-      "numpy",
-      "torch",
-      "lightning",
-      "torchvision",
-      "einops",
-      "matplotlib",
-      "tqdm",
-      "seaborn",
-      "wandb",
-      "GeoGen @ git+https://github.com/eldadHaber/StructuralGeo.git@v1.0"
-  ],
 )
