@@ -16,6 +16,10 @@ from model_train_ema_mixedpres_lowvram import (
     ODEFlowSolver,
 )
 
+import matplotlib.pyplot as plt
+
+from torch.nn import functional as F
+
 def get_config() -> dict:
     """
     Generates the entire configuration as a dictionary.
@@ -185,7 +189,7 @@ def run_inference(
         ATb = ATb.expand(n_samples, -1, -1, -1, -1)
 
     # Run the inference
-    n_steps = 16
+    n_steps = 64
     start = time.time()
     solution = solver.solve(
         X0, t0=0.0001, tf=0.9999, n_steps=n_steps
@@ -202,8 +206,6 @@ def populate_solutions(
     inference_method= run_inference,
     n_samples_each=9,
     batch_size=16,
-    sample_title="run", 
-    make_extended_solutions=False,
 ):
     # Find all the folders with the cond_data_folder_title within save_dir
     cond_data_folders = [
@@ -244,24 +246,22 @@ def populate_solutions(
                 inference_seed=42+i,
             )
             
-            sol_tf = inv_solutions[-1]  # [B, C, X, Y, Z]
+            # sol_tf = inv_solutions[-1]  # [B, C, X, Y, Z]
+            sol_with_time = inv_solutions # [T, B, C, X, Y, Z]
+            decoded = []
+            for t in range(sol_with_time.shape[0]):
+                step_logits = model.decode(sol_with_time[t], return_logits=True).cpu()
+                decoded.append(step_logits)
 
-            sol_save = (
-                model.decode(sol_tf).detach().cpu() - 1
-            )  # [B, 1, X, Y, Z] (bump back down to -1)
-            save_solutions(sol_save, folder_path, sample_title, start_index=i*batch_size)
+            decoded = torch.stack(decoded, dim=0)  # [T, B, num_classes, X, Y, Z]
+            decoded_cat_channel = torch.argmax(decoded, dim=2)  # [T, B, X, Y, Z]
+            # swap T and B to have [B, T, X, Y, Z]
+            decoded_cat_channel = decoded_cat_channel.permute(1, 0, 2, 3, 4)  # [B, T, X, Y, Z]
             
-            if make_extended_solutions:
-                # Try exteneded integration for the solutions and save a version of them
-                EXTRA_CONVERGENCE_STEPS = 5
-                print(f"Running extended integration for {EXTRA_CONVERGENCE_STEPS} steps")
-                
-                for j in range(1, EXTRA_CONVERGENCE_STEPS):
-                    # Push solution through last 1% of flow again five times
-                    sol_extended = extend_solutions(model, sol_tf, ATb) # [B, C, X, Y, Z] -> [T, B, C, X, Y, Z]
-                    sol_tf = sol_extended[-1]  # [T, B, C, X, Y, Z] -> [B, C, X, Y, Z]
-                    sol_decoded = sol_tf.detach().cpu() - 1
-                    save_solutions(sol_decoded, folder_path, f"{sample_title}_extended_{j}steps", start_index=i*batch_size)
+            sol_save = (
+                decoded_cat_channel - 1
+            )  # [T, B, 1, X, Y, Z] (bump back down to -1)
+            save_solutions(sol_save, folder_path, start_index=i*batch_size)
         
 def extend_solutions(model, initial_solutions, ATb):
     """
@@ -392,31 +392,6 @@ def ensemble_analysis():
         samples_dir, start_flag="sample_"
     )  # [B, 1, 64, 64, 64]
 
-    # model_params = {
-    #     "dim": 8,  # Base number of hidden channels in model
-    #     "dim_mults": (
-    #         1,
-    #         2,
-    #     ),  # Multipliers for hidden dims in each superblock, total 2x downsamples = len(dim_mults)-1
-    #     "data_channels": 1,  # Data clamped down to fit categorical count
-    #     "dropout": 0.1,  # Optional network dropout
-    #     "self_condition": False,  # Optional conditioning on input data
-    #     "time_sin_pos": False,  # Use fixed sin/cos positional embeddings for time
-    #     "time_resolution": 1024,  # Resolution of time (number of random Fourier features)
-    #     "time_bandwidth": 1000.0,  # Starting bandwidth of fourier frequencies, f ~ N(0, time_bandwidth)
-    #     "time_learned_emb": True,  # Learnable fourier freqs and phases
-    #     "attn_enabled": True,  # Enable or disable self attention before each (down/up sample) also feeds skip connections
-    #     "attn_dim_head": 32,  # Size of attention hidden dimension heads
-    #     "attn_heads": 4,  # Number of chunks to split hidden dimension into for attention
-    #     "full_attn": None,  # defaults to full attention only for inner most layer final down, middle, first up
-    #     "flash_attn": False,  # For high performance GPUs https://github.com/Dao-AILab/flash-attention
-    # }
-
-    # decoder = Geo3DStochInterp(
-    #     data_shape=(16, 16, 16), num_categories=15, embedding_dim=15, **model_params
-    # )
-    # sols_decoded = decoder.decode(sols).detach().cpu() - 1  # [B, 1, 64, 64, 64]
-
     model, boreholes = load_model_and_boreholes(samples_dir)
     show_model_and_boreholes(model, boreholes)
     show_solutions(sols_decoded)
@@ -458,7 +433,7 @@ def ensemble_analysis():
     p.link_views()
     p.show()
 
-    # Expand solutions out using 1 hot along c
+    # Expand solutions out using 1 hot 
     print("")
 
 def inspect_models():
@@ -488,7 +463,7 @@ def main() -> None:
     relative_checkpoint_path = os.path.join(
         "saved_models",
         "kaust-training",
-        "combined_646464_topk-epoch=1493-train_loss=0.0160.ckpt"
+        "new_combined_646464_topk-epoch=1651-train_loss=0.0146.ckpt"
     )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))  # Script directory
@@ -500,10 +475,10 @@ def main() -> None:
         use_ema=use_ema,
     ).to(inference_device)
 
-    cond_data_folder_title="normal_vs_extended"
+    cond_data_folder_title="demo_video"
 
-    # # Create the conditioning data
-    # num_folders = 10
+    # Create the conditioning data
+    # num_folders = 1
     # create_cond_data(
     #     save_dir=dirs["samples_dir"],
     #     cond_data_folder_title=cond_data_folder_title,
@@ -518,13 +493,10 @@ def main() -> None:
         device=inference_device,
         model=model,
         inference_method=run_inference,
-        n_samples_each=9,
-        sample_title="sample",
-        make_extended_solutions=True,
+        n_samples_each=4,
+        batch_size=4
     )
     
-
-
 if __name__ == "__main__":
     main()
     # load_run_display(0)

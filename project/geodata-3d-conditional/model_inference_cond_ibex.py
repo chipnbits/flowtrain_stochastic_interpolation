@@ -334,26 +334,25 @@ def main() -> None:
 
     use_ema = True  # or False
     inference_device = "cuda"
-    relative_checkpoint_path = os.path.join(
-        "/home/okhmakv/SI_checkpoints_new1/15c_64_b8_ac4_lr1_3_64n_combined",
-        "topk-epoch=1409-train_loss=0.0176.ckpt",
+    checkpoint_path = os.path.join(
+        "/data/sghyselincks/repo-kaust/flowtrain_stochastic_interpolation/project/geodata-3d-conditional/saved_models/kaust-training/combined_tilt_646464_topk-epoch=1812-train_loss=0.0171.ckpt",
     )
 
     model = load_model_with_ema_option(
-        ckpt_path=relative_checkpoint_path,
+        ckpt_path=checkpoint_path,
         map_location=inference_device,
         use_ema=use_ema,
     ).to(inference_device)
 
     
-    for i in range(20):
-        model_test( 
-            dirs,
-            inference_device,
-            model=model,
-            n_samples=6,
-            run_num=i,
-        )
+    # for i in range(20):
+    #     model_test( 
+    #         dirs,
+    #         inference_device,
+    #         model=model,
+    #         n_samples=6,
+    #         run_num=i,
+    #     )
 
 
 if __name__ == "__main__":

@@ -94,8 +94,8 @@ def show_model_and_boreholes(model, boreholes):
     p.show()
 
 
-file_path = "/Users/user/Documents/conditional_inference/updated_results/64_cubed1/1200epoch/lr1_3_combined1200epoch"
-run_name = "run_new_4"
+file_path = "/data/sghyselincks/repo-kaust/flowtrain_stochastic_interpolation/project/geodata-3d-conditional/samples/kaust-training/"
+run_name = "paper_cond_gen_0"
 
 
 load_run_display(file_path, run_name)
