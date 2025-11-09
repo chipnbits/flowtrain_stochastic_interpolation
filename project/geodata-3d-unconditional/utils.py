@@ -25,7 +25,7 @@ def download_if_missing(path, url):
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         print(f"Downloading weights from {url}...")
-        urllib.request.urlretrieve(url, path)
+        torch.hub.download_url_to_file(url, path, progress=True)
         print("Download complete.")
 
 

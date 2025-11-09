@@ -5,19 +5,14 @@ Train the velocity matching objective on an infinite 3D GeoData set.
 import argparse
 import os
 import re
-import platform
+
 import time
 import warnings
 from typing import Any, Dict, List, Tuple, Optional, Union
 
-import matplotlib.pyplot as plt
-import numpy as np
-import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
-from matplotlib import patches
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -320,7 +315,7 @@ class Geo3DStochInterp(LightningModule):
         # Embedding layer setup
         self.embedding = nn.Embedding(self.num_categories, self.embedding_dim)
         self._initialize_embedding(self.num_categories, self.embedding_dim)
-        # Freeze embedding weights after initialization (non-learnable)
+        # Freeze embedding weights after initialization (non-learnable hardcoding, set to True for learnable)
         self.embedding.weight.requires_grad = False
 
         # Update model_params to reflect the new input channels
@@ -619,6 +614,7 @@ def run_inference(
 
     solver = ODEFlowSolver(model=model.net, rtol=1e-6)
 
+    # Start and stop times for ODEFlow, slightly away from t=0 to avoid numerical stability issues
     t0, tf = 0.001, 1.0
     n_steps = 16
 
@@ -777,9 +773,10 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '--save-images', 
-        action='store_true',
-        help='Save visualization images during inference'
+        '--save-images',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Save visualization images during inference (use --no-save-images to disable)'
     )
     
     parser.add_argument(
@@ -832,6 +829,10 @@ def main() -> None:
         model = Geo3DStochInterp.load_from_checkpoint(
             checkpoint_path, map_location=inference_device
         ).to(inference_device)
+        
+        print(f"Running inference with {args.n_samples} samples on device {inference_device} with batch size {args.batch_size}")
+        print(f"Samples will be saved to: {dirs['samples_dir']}")
+        print(f"Images will be saved to: {dirs['photo_dir'] if args.save_images else 'Not saving images'}")
 
         run_inference(
             dirs,

@@ -19,18 +19,18 @@ The `project/` directory contains code and supporting files for training and eva
 
 The codebase is built on:
 
+- **StructuralGeo** for synthetic geological data generation [GitHub](https://github.com/eldadHaber/StructuralGeo)
 - **PyTorch** for deep learning
 - **PyTorch Lightning** for cleaner training loops
 - **Weights & Biases (wandb)** for experiment tracking
 
 ### Pretrained Models
-Pretrained models for both **unconditional** and **conditional** generation at 64³ resolution are available. These weights are downloaded automatically on first use and stored in the `project/*/demo_model/` directory.
+Pretrained models for both **unconditional** and **conditional** generation at 64³ resolution are available. These weights are downloaded automatically if not found on tge first use and stored in the `project/*/demo_model/` directory.
 
 If desired, the weights can also be downloaded manually from the [v1.0.0 GitHub release](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/tag/v1.0.0):
 
-- [`conditional-weights.ckpt`](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/conditional-weights.ckpt) with training run [WandB](https://wandb.ai/sghyseli/cat-embeddings-18d-normed-64cubed?nw=nwusersghyseli)
-- [`unconditional-weights.ckpt`](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt)
-
+- [`conditional-weights.ckpt`](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/conditional-weights.ckpt) 
+- [`unconditional-weights.ckpt`](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt) with training run [WandB](https://wandb.ai/sghyseli/cat-embeddings-18d-normed-64cubed?nw=nwusersghyseli)
 ---
 
 ## Usage
@@ -46,33 +46,37 @@ cd project/geodata-3d-unconditional
 python train_inference_unconditional.py --mode train --train-devices 0,1
 ```
 
-- **Inference:**
-Pretrained weights are setup to load automatically, custom training checkpoint available with `--checkpoint_path` flag.
-
-
-- **Inference demo:** Use the `main()` function in the same script to run inference with pretrained weights.
+- **Inference demo:** Use the `main()` function in the same script to run inference with pretrained weights. Optional flags include:
+    - `--mode`: Set to train, inference, or both (default: inference)
+    - `--n-samples`: Number of samples to generate (default: 8)
+    - `--batch-size`: Batch size for inference (default: 1)
+    - `--seed`: Random seed for reproducibility (default: 100)
+    - `--no-save-images`: Disable saving visualization images (default: save images)
+    - `--infer-device`: Device for inference, e.g., `cuda` or `cpu` (default: `cpu`)
+    - `--checkpoint_path`: Path to custom checkpoint file to override pretrained weights (default: use pretrained weights)
+The pretrained model will be automatically downloaded if not found locally. 
+Note that the pretrained weights are setup to load automatically, custom training checkpoint loading is available with the `--checkpoint_path` flag.
 
 ```bash
 cd project/geodata-3d-unconditional
 
 # Saves tensors + PNGs to project/samples/<project_name>/
-python train_inference_unconditional.py --mode inference --n-samples 8 --batch-size 2 --seed 100 --save-images --infer-device cuda
+python train_inference_unconditional.py --mode inference --n-samples 8 --batch-size 2 --seed 100 --infer-device cuda
 ```
 
 ### Conditional Training & Inference
 
-Conditional training and inference requires an additional step to set up the surface and borehole data from a random generated StructuralGeo sample.
+Conditional training and inference requires an additional step to set up the surface and borehole data from a random generated [StructuralGeo](https://github.com/eldadHaber/StructuralGeo) streaming data sample.
 
 - **Training:** `model_train_sh_inference_cond.py`
 
-Training parameters can be adjusted via the `get_config()` function in the script. Script is set to the training regime used for the pretrained conditional model provided.
+Training parameters can be adjusted via the `get_config()` function inside of the script. Script is set to the training regime that wasused for the pretrained conditional model provided.
 
 ```bash
 cd project/geodata-3d-conditional
 
 python model_train_sh_inference_cond.py
 ```
-
 
 - **Inference:**
 A Jupyter notebook `project/geodata-3d-conditional/inference_demo.ipynb` is provided to demonstrate generating conditional data, loading the saved weights, and running inference with the pretrained model. An additional probabilistic analysis using an ensemble of models is also included, making use of compressed data in the `dikes_ptpack.tar.gz` archive.
