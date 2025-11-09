@@ -2,7 +2,7 @@
 
 This repository includes the `flowtrain` package for stochastic interpolation and managing machine learning models. The source code is located in `src/flowtrain`.
 
-To install the package in editable mode, navigate to the project root (where `setup.py` is located) and run:
+Make sure that Python 3.12 is installed first through an environment manager, e.g. `conda create -n flowtrain-test python=3.12 -y`.To install the package in editable mode, navigate to the project root (where `setup.py` is located) and run:
 
 ```bash
     pip install -e .
