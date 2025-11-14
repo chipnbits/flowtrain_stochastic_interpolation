@@ -33,6 +33,16 @@ If desired, the weights can also be downloaded manually from the [v1.0.0 GitHub 
 - [`unconditional-weights.ckpt`](https://github.com/chipnbits/flowtrain_stochastic_interpolation/releases/download/v1.0.0/unconditional-weights.ckpt) with training run [WandB](https://wandb.ai/sghyseli/cat-embeddings-18d-normed-64cubed?nw=nwusersghyseli)
 ---
 
+### Model Configuration (Summary)
+
+- Base channels: 48  
+- Channel multipliers: (1, 2, 2, 3, 4)  
+- Time embeddings: Learned Fourier (1024 dim, bandwidth 1000)  
+- Attention: Enabled at all scales, 4 heads, dim_head = 32  
+- Conditioning: ATb embedding with ATb mixing at every resolution  
+- Training: LR = 1e-3, EMA = 0.9995, t ∈ [1e-4, 0.9999], batch=8  
+
+
 ## Usage
 
 ### Unconditional Model
